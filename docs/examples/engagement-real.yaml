@@ -1,0 +1,35 @@
+name: customer-acme-q2
+mode: engagement
+targets:
+  - app.acme.example
+  - api.acme.example
+objective: "Identify exploitable vulnerabilities exposed externally"
+budget_usd: 250.0
+profile: max
+
+roe:
+  allowed_hosts:
+    - app.acme.example
+    - api.acme.example
+  allowed_networks:
+    - 198.51.100.0/24
+  blocked_hosts:
+    - admin.acme.example
+    - 198.51.100.42       # CFO's personal jumphost — out of scope
+  blocked_ports:
+    - 25                  # no email infra
+  allowed_techniques:
+    - recon
+    - exploit
+  blocked_techniques:
+    - lateral_movement
+    - data_exfiltration
+    - persistence
+  destructive_requires_approval: true
+  signed_document_path: ./signed-roe-2026-q2.pdf
+  signed_by: "Jane Defender (CISO, ACME Corp)"
+  signed_at: "2026-04-30T16:00:00Z"
+
+notes: |
+  External engagement. HITL approval required on any exploit-class action.
+  Customer is on call for stuck escalations.

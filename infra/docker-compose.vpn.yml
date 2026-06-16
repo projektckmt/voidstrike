@@ -1,0 +1,133 @@
+# VPN sidecar overlay.
+#
+# Usage:
+#   The preferred path is to set `vpn_config:` in the engagement YAML — the
+#   CLI's `voidstrike engage` resolves it (--vpn > VPN_FILE > spec) and runs
+#   `docker compose up -d` with VPN_FILE pointed at the resolved .ovpn before
+#   posting the engagement to the gateway.
+#
+#   Manual invocation (pre-CLI, or when running compose directly):
+#     VPN_FILE=$(pwd)/machines_us-dedivip-1.ovpn \
+#       docker compose -f infra/docker-compose.yml -f infra/docker-compose.vpn.yml up -d
+#
+# Brings up a single `vpn` container running OpenVPN with the provided
+# .ovpn config. Every offensive MCP server (surface, exploit, shell, browser)
+# joins that container's network namespace via `network_mode: "service:vpn"`,
+# so their outbound traffic (nmap, curl, playwright) routes through the
+# tunnel.
+#
+# Trade-offs:
+#   - One VPN per compose stack, not per engagement. To swap targets, change
+#     the spec's `vpn_config:` (or VPN_FILE) and re-run `voidstrike engage` —
+#     compose will recreate the sidecar when the mount source changes.
+#   - MCP containers lose direct access to `ops-net`, so the
+#     `docker-compose.ops.yml` dev targets (DVWA, Juice Shop) are NOT
+#     reachable while this overlay is active. Pick one mode or the other.
+#   - Each MCP server listens on a unique port inside the shared namespace
+#     (8081-8084) so they don't collide.
+
+services:
+  vpn:
+    image: alpine:3.20
+    cap_add: [NET_ADMIN]
+    devices:
+      - /dev/net/tun
+    volumes:
+      # Long-form bind mount with `create_host_path: false` — without this,
+      # Docker silently *creates* an empty path on the host if VPN_FILE points
+      # at something that doesn't exist, then mounts that into the container.
+      # OpenVPN then reads an empty config and dies with "must define --dev".
+      # Use an absolute path (e.g. VPN_FILE="$(pwd)/your.ovpn") — relative
+      # paths are resolved against the compose file's directory (infra/),
+      # not your shell's CWD.
+      - type: bind
+        source: ${VPN_FILE:?VPN_FILE must point at your .ovpn file (absolute path)}
+        target: /etc/openvpn/client.ovpn
+        read_only: true
+        bind:
+          create_host_path: false
+    command: >
+      sh -c "
+      apk add --no-cache openvpn iproute2 bind-tools curl &&
+      mkdir -p /dev/net &&
+      if [ ! -c /dev/net/tun ]; then mknod /dev/net/tun c 10 200; chmod 600 /dev/net/tun; fi &&
+      echo '[vpn] starting OpenVPN ...' &&
+      openvpn --config /etc/openvpn/client.ovpn --auth-nocache
+      "
+    healthcheck:
+      # Wait for the tun interface to come up. Other services depend_on this.
+      test: ["CMD-SHELL", "ip -o link show tun0 >/dev/null 2>&1 || ip -o link show tap0 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    networks: [management-net]
+
+  # Each offensive MCP server joins the VPN namespace. Note we have to
+  # *override* `networks` to null because `network_mode: "service:vpn"` is
+  # mutually exclusive with custom networks.
+  #
+  # IMPORTANT: capabilities are PER-PROCESS, not inherited from the namespace
+  # donor. The Kali `nmap` binary has file capabilities
+  # `cap_net_admin,cap_net_raw=eip`. The kernel refuses to exec a
+  # file-capability-bearing binary if those caps aren't in the process's
+  # bounding set — failing with `Operation not permitted` at exec time.
+  # Without NET_ADMIN here, every `nmap` call from surface-mcp dies before
+  # it sends a single packet, and the agent reports "target unreachable".
+
+  surface-mcp:
+    network_mode: "service:vpn"
+    networks: !reset null
+    cap_add: [NET_ADMIN, NET_RAW]
+    depends_on:
+      vpn:
+        condition: service_healthy
+    environment:
+      PORT: "8081"
+
+  exploit-mcp:
+    network_mode: "service:vpn"
+    networks: !reset null
+    cap_add: [NET_ADMIN, NET_RAW]
+    depends_on:
+      vpn:
+        condition: service_healthy
+    environment:
+      PORT: "8082"
+
+  shell-mcp:
+    network_mode: "service:vpn"
+    networks: !reset null
+    cap_add: [NET_ADMIN, NET_RAW]
+    depends_on:
+      vpn:
+        condition: service_healthy
+    environment:
+      PORT: "8083"
+
+  browser-mcp:
+    network_mode: "service:vpn"
+    networks: !reset null
+    cap_add: [NET_ADMIN, NET_RAW]
+    depends_on:
+      vpn:
+        condition: service_healthy
+    environment:
+      PORT: "8084"
+
+  # postex-mcp doesn't need VPN reachability — it talks to shell-mcp over
+  # HTTP. But shell-mcp's address is now `vpn` (the namespace donor), so we
+  # rewire postex's lookup. It stays on management-net.
+  postex-mcp:
+    environment:
+      MCP_SHELL_URL: http://vpn:8083/mcp
+
+  # Gateway needs to reach the MCP servers at the vpn-service hostname, with
+  # the per-server ports we assigned above.
+  gateway:
+    environment:
+      MCP_SURFACE_URL: http://vpn:8081/mcp
+      MCP_EXPLOIT_URL: http://vpn:8082/mcp
+      MCP_SHELL_URL: http://vpn:8083/mcp
+      MCP_BROWSER_URL: http://vpn:8084/mcp
+      # postex and episodes stay on management-net; URLs unchanged.

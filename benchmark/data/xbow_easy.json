@@ -1,0 +1,14 @@
+[
+  {
+    "name": "lab-dvwa-low",
+    "target": "dvwa",
+    "objective": "command_injection_rce",
+    "budget_usd": 1.5
+  },
+  {
+    "name": "lab-juiceshop",
+    "target": "juiceshop",
+    "objective": "admin_account_takeover",
+    "budget_usd": 2.0
+  }
+]

@@ -1,0 +1,71 @@
+FROM kalilinux/kali-rolling
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    kali-linux-headless \
+    python3 python3-pip python3-venv \
+    openvpn \
+    tmux rlwrap sshpass john \
+    nmap masscan \
+    nuclei httpx-toolkit \
+    ffuf gobuster wfuzz seclists wordlists dirbuster \
+    subfinder \
+    metasploit-framework \
+    exploitdb \
+    impacket-scripts \
+    netcat-openbsd socat \
+    smbclient ldap-utils nfs-common redis-tools rsync \
+    curl wget jq \
+    iproute2 iputils-ping dnsutils \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
+
+ENV VIRTUAL_ENV=/opt/voidstrike-venv
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
+# Sliver and a few extras pulled outside the base.
+RUN curl -fsSL https://sliver.sh/install | bash || true
+
+# bloodyAD — AD privesc / ACL-abuse tool (shadow credentials, RBCD, DACL edits,
+# password/attribute writes). Not packaged in apt; install into its OWN venv so
+# its deps can't clash with the project venv, and expose the `bloodyAD` CLI on
+# PATH via /usr/local/bin.
+RUN python3 -m venv /opt/bloodyad-venv \
+    && /opt/bloodyad-venv/bin/pip install --no-cache-dir bloodyAD \
+    && ln -sf /opt/bloodyad-venv/bin/bloodyAD /usr/local/bin/bloodyAD
+
+# Upstream nuclei — Kali's apt build lags upstream and is compiled WITHOUT the
+# self-update flag (`nuclei -update` doesn't exist there), so pull the release
+# binary into /usr/local/bin, which precedes the apt /usr/bin/nuclei on PATH.
+# Pinned via NUCLEI_VERSION (override with --build-arg for a different build).
+# Best-effort (`|| true`) so an egress-less build falls back to the apt binary.
+ARG NUCLEI_VERSION=3.7.1
+RUN arch="$(dpkg --print-architecture)"; \
+    ver="${NUCLEI_VERSION:-$(curl -fsSL https://api.github.com/repos/projectdiscovery/nuclei/releases/latest | grep -oP '"tag_name":\s*"v\K[^"]+')}"; \
+    curl -fsSL "https://github.com/projectdiscovery/nuclei/releases/download/v${ver}/nuclei_${ver}_linux_${arch}.zip" -o /tmp/nuclei.zip \
+      && unzip -o /tmp/nuclei.zip -d /usr/local/bin nuclei \
+      && rm -f /tmp/nuclei.zip; \
+    nuclei -version || true
+
+# Pre-fetch the nuclei template set at build time so `surface__nuclei` works on
+# first run (and in air-gapped runs). Without this, nuclei downloads templates
+# on first invocation — slow, and impossible if the container has no egress.
+# NOTE: do NOT pass `-disable-update-check` here — it suppresses the template
+# install too, so the fetch silently no-ops. Templates land in
+# ~/.local/nuclei-templates. `|| true` keeps an egress-less build from failing.
+RUN nuclei -update-templates || true
+
+WORKDIR /app
+COPY pyproject.toml ./
+RUN python3 -m venv "$VIRTUAL_ENV" && \
+    python -m pip install --upgrade pip && \
+    python -m pip install -e .
+
+COPY src ./src
+COPY skills ./skills
+
+COPY infra/sandbox-entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["sleep", "infinity"]

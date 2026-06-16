@@ -1,0 +1,222 @@
+# Management plane — UI, gateway, runtime, datastores, MCP servers.
+# Ops plane (separate file: docker-compose.ops.yml) holds the Kali sandbox and
+# any per-engagement targets. The two networks are bridged only via the docker
+# socket and the episodes MCP server.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-voidstrike}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-voidstrike}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    networks: [management-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-voidstrike}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-changeme}
+      NEO4J_PLUGINS: '["apoc"]'
+    volumes:
+      - neo4j-data:/data
+    networks: [management-net]
+    ports:
+      - "127.0.0.1:7474:7474"
+
+  redis:
+    image: redis:7-alpine
+    networks: [management-net]
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    env_file: ../.env
+    networks: [management-net]
+
+  episodes-mcp:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.python
+    command: ["python", "-m", "src.mcp_servers.episodes.server"]
+    environment:
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-voidstrike}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-voidstrike}
+      PORT: "8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [management-net]
+
+  research-mcp:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.python
+    command: ["python", "-m", "src.mcp_servers.research.server"]
+    env_file: ../.env
+    environment:
+      PORT: "8080"
+    networks: [management-net]
+
+  surface-mcp:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.kali
+    command: ["python3", "-m", "src.mcp_servers.surface.server"]
+    networks: [management-net, ops-net]
+    environment:
+      PORT: "8080"
+
+  exploit-mcp:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.kali
+    command: ["python3", "-m", "src.mcp_servers.exploit.server"]
+    networks: [management-net, ops-net]
+    environment:
+      PORT: "8080"
+
+  postex-mcp:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.python
+    command: ["python", "-m", "src.mcp_servers.postex.server"]
+    environment:
+      MCP_SHELL_URL: http://shell-mcp:8080/mcp
+      PORT: "8080"
+    networks: [management-net, ops-net]
+
+  shell-mcp:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.kali
+    command: ["python3", "-m", "src.mcp_servers.shell.server"]
+    cap_add: [NET_ADMIN]
+    devices:
+      - /dev/net/tun
+    volumes:
+      # Bind-mount the project's `engagements/` dir so files written by the
+      # in-process tools (record_flag, render_report, etc.) are visible on
+      # the host without `docker cp`. Path is relative to the compose file
+      # location (infra/), so `../engagements` is the project root.
+      - ../engagements:/engagement
+      - ${VPN_DIR:-/dev/null}:/etc/openvpn/configs:ro
+    environment:
+      PORT: "8080"
+    networks: [management-net, ops-net]
+
+  ad-mcp:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.kali
+    command: ["python3", "-m", "src.mcp_servers.ad.server"]
+    environment:
+      PORT: "8080"
+      NEO4J_URI: ${BLOODHOUND_NEO4J_URI:-bolt://neo4j:7687}
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme}
+    networks: [management-net, ops-net]
+    profiles: ["ad"]   # AD specialist is opt-in per engagement
+
+  browser-mcp:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.browser
+    command: ["python", "-m", "src.mcp_servers.browser.server"]
+    environment:
+      PORT: "8080"
+    networks: [management-net, ops-net]
+    shm_size: "1gb"
+
+  etl:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.python
+    command: ["python", "-m", "src.etl.log_to_graph"]
+    environment:
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-voidstrike}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-voidstrike}
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [management-net]
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.python
+    command: ["python", "-m", "src.gateway.main"]
+    env_file: ../.env
+    environment:
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-voidstrike}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-voidstrike}
+      REDIS_URL: redis://redis:6379/0
+      MCP_SURFACE_URL: http://surface-mcp:8080/mcp
+      MCP_EXPLOIT_URL: http://exploit-mcp:8080/mcp
+      MCP_POSTEX_URL: http://postex-mcp:8080/mcp
+      MCP_BROWSER_URL: http://browser-mcp:8080/mcp
+      MCP_SHELL_URL: http://shell-mcp:8080/mcp
+      MCP_EPISODES_URL: http://episodes-mcp:8080/mcp
+      MCP_RESEARCH_URL: http://research-mcp:8080/mcp
+      # AD specialist is opt-in. Set MCP_AD_URL in your .env (or `--profile ad`
+      # plus a one-off `MCP_AD_URL=http://ad-mcp:8080/mcp` export) to enable it.
+      MCP_AD_URL: ${MCP_AD_URL:-}
+      LITELLM_PROXY_URL: http://litellm:4000
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      - postgres
+      - redis
+      - litellm
+      - episodes-mcp
+      - research-mcp
+    networks: [management-net]
+    volumes:
+      # `engagements/` is bind-mounted to the project root so the gateway's
+      # in-process tools (render_report, record_flag, lab_state) leave
+      # human-readable artifacts where the operator can grep them.
+      - ../engagements:/app/engagements
+      - ../skills:/app/skills
+
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+    environment:
+      # Browser → gateway: goes through the host's port forward.
+      NEXT_PUBLIC_GATEWAY_URL: http://localhost:8000
+      # Next.js server components → gateway: stays inside Docker, uses
+      # the service-name DNS. Without this, server components inside the
+      # `web` container would try `localhost:8000` and get connection refused,
+      # which is why every server-rendered page came up empty.
+      GATEWAY_INTERNAL_URL: http://gateway:8000
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on: [gateway]
+    networks: [management-net]
+    profiles: ["web"]   # opt-in; not required for headless runs
+
+networks:
+  management-net:
+    driver: bridge
+  ops-net:
+    driver: bridge
+    internal: false   # set true for engagement mode to block egress from sandbox
+
+volumes:
+  postgres-data:
+  neo4j-data:
+  # NB: `engagements` is no longer a named volume — it's a bind-mount to
+  # `../engagements` (i.e. the project's `engagements/` dir) on each service
+  # that needs it. That puts engagement artifacts (reports, flags, lab_state)
+  # where the operator can read them directly. If you're on Linux and see
+  # root-owned files, run `sudo chown -R $USER engagements/`.

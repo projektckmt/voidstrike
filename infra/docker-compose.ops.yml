@@ -1,0 +1,41 @@
+# Ops plane — Kali sandbox + optional dev targets for the Phase-1 loop.
+#
+# Use this for local iteration before pointing at HTB.
+#   "point at one random retired easy HTB box and watch what breaks" only
+#   after the dev target works end-to-end.
+
+services:
+  kali-sandbox:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.kali
+    cap_add: [NET_ADMIN]
+    devices:
+      - /dev/net/tun
+    networks: [ops-net]
+    volumes:
+      # Same bind mount as the base compose — see the comment there.
+      - ../engagements:/engagement
+      - ${VPN_DIR:-/dev/null}:/etc/openvpn/configs:ro
+    command: ["sleep", "infinity"]
+    profiles: ["sandbox"]
+
+  # Deliberately vulnerable Phase-1 dev target.
+  dvwa:
+    image: vulnerables/web-dvwa
+    networks: [ops-net]
+    profiles: ["dev-targets"]
+
+  juiceshop:
+    image: bkimminich/juice-shop
+    networks: [ops-net]
+    profiles: ["dev-targets"]
+
+networks:
+  ops-net:
+    external: true
+    name: voidstrike_ops-net
+
+# NB: the `engagements` named volume was removed when we switched to a
+# bind-mount in the base compose. Each service that needs it bind-mounts
+# `../engagements` directly.

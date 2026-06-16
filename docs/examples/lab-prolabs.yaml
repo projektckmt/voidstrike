@@ -1,0 +1,11 @@
+name: htb-prolabs-dante
+mode: lab
+targets:
+  - 172.16.10.0/24
+  - 172.16.20.0/24
+objective: "foothold breadth + domain admin if reachable"
+budget_usd: 60.0
+profile: eco
+vpn_config: ../../htb-prolabs.ovpn  # path is resolved relative to this spec file
+notes: |
+  Multi-host pro lab. Lateral movement requires HITL approval.

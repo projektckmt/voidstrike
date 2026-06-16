@@ -1,0 +1,46 @@
+name: benchmark
+
+on:
+  schedule:
+    - cron: "0 6 * * *"   # nightly 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Benchmark mode"
+        required: true
+        default: "nightly"
+        type: choice
+        options: [ci_easy, nightly]
+
+jobs:
+  run:
+    runs-on: self-hosted          # needs Docker + VPN — self-hosted runner
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bring up the stack
+        run: docker compose -f infra/docker-compose.yml up -d
+      - name: Wait for gateway
+        run: |
+          for _ in $(seq 1 60); do
+            curl -sf http://localhost:8000/healthz && break
+            sleep 5
+          done
+      - name: Run benchmark
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          if [[ "${{ inputs.mode || 'nightly' }}" == "ci_easy" ]]; then
+            python -m benchmark.ci_easy
+          else
+            python -m benchmark.nightly_full
+          fi
+      - name: Aggregate
+        run: python -m benchmark.aggregate
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark/results/
