@@ -4,7 +4,7 @@ plan requires (engagement requires signed RoE, allowlists merge correctly).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -122,7 +122,7 @@ def test_engagement_mode_with_signed_roe(tmp_path) -> None:
             allowed_techniques=["recon", "exploit"],
             signed_document_path=str(doc),
             signed_by="Jane Defender",
-            signed_at=datetime.now(timezone.utc),
+            signed_at=datetime.now(UTC),
         ),
     )
     resolved = resolve_mode(spec)
@@ -133,6 +133,7 @@ def test_engagement_mode_with_signed_roe(tmp_path) -> None:
 def test_engagement_mode_refuses_when_spec_exceeds_signed_scope(tmp_path) -> None:
     """Spec asks for `lateral_movement` but the signed doc doesn't allow it."""
     import yaml
+
     from src.agent.modes.engagement import RoEScopeViolation
     doc = tmp_path / "narrow-roe.yaml"
     doc.write_text(yaml.safe_dump({
@@ -148,7 +149,7 @@ def test_engagement_mode_refuses_when_spec_exceeds_signed_scope(tmp_path) -> Non
             allowed_techniques=["recon", "lateral_movement"],
             signed_document_path=str(doc),
             signed_by="Jane Defender",
-            signed_at=datetime.now(timezone.utc),
+            signed_at=datetime.now(UTC),
         ),
     )
     with pytest.raises(RoEScopeViolation):

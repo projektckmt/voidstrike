@@ -57,7 +57,7 @@ def stuck_detector(threshold: int = 15):
             states[thread_id] = _StuckState(threshold=threshold)
         return states[thread_id]
 
-    PRODUCTIVE_KEYWORDS = ("new finding", "shell landed", "objective met", "priv escalated")
+    PRODUCTIVE_KEYWORDS = ("new finding", "shell landed", "objective met", "priv escalated")  # noqa: N806
 
     def _outcome_from_message(msg) -> OutcomeTag:  # noqa: ANN001
         # Heuristic: scan the tool message content for productive markers. Real

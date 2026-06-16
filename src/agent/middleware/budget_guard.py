@@ -25,7 +25,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # Prices in USD per 1 million tokens. Keys are the model identifier as
 # reported in `usage_metadata` / `response_metadata.model_name`.
 # Falls back to `_FALLBACK_PRICING` for unknown models so we still produce a

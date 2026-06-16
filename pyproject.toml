@@ -53,7 +53,14 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N"]
-ignore = ["E501"]
+# E701: deliberate compact guard clauses / status-map one-liners in the CLI renderer.
+# B008: idiomatic Typer/FastAPI defaults (typer.Option/Argument, File()/Form()).
+# N818: exception names are intentional (RoEViolation, MissingSignedRoE, ...).
+ignore = ["E501", "E701", "B008", "N818"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use descriptive non-snake-case names and compact one-liners on purpose.
+"tests/**" = ["E702", "N802", "N806"]
 
 [tool.mypy]
 python_version = "3.11"

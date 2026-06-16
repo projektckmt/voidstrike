@@ -13,7 +13,6 @@ HITL covers them.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from typing import Any
 
@@ -35,7 +34,7 @@ async def _exec(cmd: list[str], stdin: bytes | None = None, timeout_s: int = 300
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(stdin), timeout=timeout_s)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         return {"ok": False, "error": "timeout"}
     return {

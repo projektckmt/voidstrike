@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Gateway: status derivation
@@ -187,9 +185,10 @@ def test_cli_ls_running_flag_passes_param(monkeypatch) -> None:
 
 def test_cli_ls_handles_gateway_down(monkeypatch) -> None:
     """If the gateway is unreachable, ls should exit cleanly (not raise)."""
-    from src.cli import main as cli
     import httpx as _httpx
     import typer
+
+    from src.cli import main as cli
 
     def _raise(*a, **kw):
         raise _httpx.ConnectError("connection refused")

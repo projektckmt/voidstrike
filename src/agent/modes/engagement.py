@@ -40,6 +40,7 @@ def engagement_mode(spec: EngagementSpec):
 
     # Verify the document exists + scope doesn't exceed signed scope.
     import asyncio
+
     from ..roe_document import verify_roe_document  # noqa: PLC0415
     verification = asyncio.run(
         verify_roe_document(spec.roe.signed_document_path, spec.roe)

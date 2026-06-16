@@ -6,8 +6,6 @@ payloads. These tests pin the shapes we actually see in production.
 
 from __future__ import annotations
 
-import json
-
 
 def test_dict_with_string_content() -> None:
     from src.cli.main import _message_content

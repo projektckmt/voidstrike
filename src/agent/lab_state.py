@@ -68,7 +68,7 @@ class LabState:
         )
 
     @classmethod
-    def from_json(cls, raw: str) -> "LabState":
+    def from_json(cls, raw: str) -> LabState:
         data = json.loads(raw)
         state = cls(engagement_id=data["engagement_id"])
         for address, record_dict in data["hosts"].items():

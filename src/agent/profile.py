@@ -66,7 +66,10 @@ def register() -> None:
         return
 
     try:
-        from deepagents import HarnessProfile, register_harness_profile  # type: ignore[import-untyped]
+        from deepagents import (  # type: ignore[import-untyped]
+            HarnessProfile,
+            register_harness_profile,
+        )
     except ImportError as exc:
         log.warning("deepagents HarnessProfile API unavailable (%s) — skipping", exc)
         return

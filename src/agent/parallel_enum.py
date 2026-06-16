@@ -16,11 +16,12 @@ Bounds:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 
-from .lab_state import HostStatus
 from . import lab_state
+from .lab_state import HostStatus
 
 
 @dataclass
@@ -80,8 +81,8 @@ def _mark(engagement_id: str, host: str, *, owned: bool, dead: bool,
     """Best-effort write to the lab-state file. The orchestrator's tools call
     the same writers when it has more context; we just record the fan-out
     outcome."""
-    from pathlib import Path
     import os
+    from pathlib import Path
     eng_dir = engagement_dir or Path(os.environ.get("ENGAGEMENT_DIR", "./engagements"))
     state = lab_state.load(eng_dir, engagement_id)
     if dead:

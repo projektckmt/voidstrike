@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+
 # (tactic_id, technique_id) — see attack.mitre.org for canonical names.
 @dataclass(frozen=True)
 class AttackRef:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.agent.middleware.fuzz_guard import _FuzzState, _ffuf_scope
+from src.agent.middleware.fuzz_guard import _ffuf_scope, _FuzzState
 
 
 def test_ffuf_scope_groups_fuzz_variants_by_web_root() -> None:

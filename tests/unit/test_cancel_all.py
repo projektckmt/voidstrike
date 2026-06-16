@@ -11,7 +11,6 @@ import asyncio
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Gateway: cancel_all_engagements
 # ---------------------------------------------------------------------------
@@ -60,7 +59,7 @@ def test_cancel_all_cancels_every_running_task(monkeypatch) -> None:
             for t in (t1, t2):
                 try:
                     await asyncio.wait_for(t, timeout=1.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError):
+                except (TimeoutError, asyncio.CancelledError):
                     pass
             return result, t1, t2
         finally:
@@ -107,7 +106,7 @@ def test_cancel_all_distinguishes_already_finished_tasks(monkeypatch) -> None:
             result = await gw.cancel_all_engagements()
             try:
                 await asyncio.wait_for(running, timeout=1.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
+            except (TimeoutError, asyncio.CancelledError):
                 pass
             return result
         finally:
@@ -137,8 +136,9 @@ class _FakeResp:
 
 
 def test_cli_cancel_requires_id_or_all(monkeypatch) -> None:
-    from src.cli import main as cli
     import typer
+
+    from src.cli import main as cli
 
     with pytest.raises(typer.Exit) as exc:
         cli.cancel(engagement_id=None, all_running=False, yes=False)
@@ -146,8 +146,9 @@ def test_cli_cancel_requires_id_or_all(monkeypatch) -> None:
 
 
 def test_cli_cancel_rejects_id_and_all_together(monkeypatch) -> None:
-    from src.cli import main as cli
     import typer
+
+    from src.cli import main as cli
 
     with pytest.raises(typer.Exit) as exc:
         cli.cancel(engagement_id="abc", all_running=True, yes=True)
@@ -223,9 +224,10 @@ def test_cli_cancel_all_with_yes_skips_prompt(monkeypatch) -> None:
 def test_cli_cancel_all_handles_gateway_down_on_list(monkeypatch) -> None:
     """If the gateway is unreachable when we try to list, surface a clean
     Exit(1), not a stack trace."""
-    from src.cli import main as cli
     import httpx as _httpx
     import typer
+
+    from src.cli import main as cli
 
     def _raise(*a, **kw):
         raise _httpx.ConnectError("connection refused")

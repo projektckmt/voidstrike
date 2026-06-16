@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -106,7 +106,7 @@ name: {name}
 description: {description}
 metadata:
   status: proposed
-  proposed_at: {datetime.now(timezone.utc).isoformat()}
+  proposed_at: {datetime.now(UTC).isoformat()}
   proposed_from: {sequence_hash}
 ---
 
@@ -162,7 +162,6 @@ def skill_proposer(out_dir: Path | str = PROPOSED_DIR, skills_root: Path | str =
 
         known_hashes = _load_known_hashes(root)
         objective = state.get("current_objective", "engagement")
-        engagement_id = state.get("thread_id", "unknown")
 
         emitted: list[str] = []
         for slice_key, slice_episodes in _slice_by_agent(episodes).items():

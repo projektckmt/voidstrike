@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-import psycopg
 from mcp.server.fastmcp import FastMCP
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
@@ -66,7 +65,7 @@ async def write_episode(
                 (
                     engagement_id,
                     agent_name,
-                    datetime.now(timezone.utc),
+                    datetime.now(UTC),
                     action,
                     json.dumps(tool_input or {}),
                     tool_output,

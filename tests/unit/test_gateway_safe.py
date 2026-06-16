@@ -76,6 +76,7 @@ def test_safe_round_trips_to_pure_json() -> None:
     """Whatever `_dump` produces, the wrapping `_safe` must run a JSON
     round-trip that completes without error."""
     import json as _json
+
     from src.gateway.main import _safe
     payload = {"event": "step", "messages": [{"content": "ok"}]}
     out = _safe(payload)

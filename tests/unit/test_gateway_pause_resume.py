@@ -11,7 +11,6 @@ The pause/resume contract:
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 import pytest
 
@@ -22,6 +21,7 @@ def fresh_gateway(monkeypatch, tmp_path):
     monkeypatch.setenv("ENGAGEMENT_DIR", str(tmp_path))
     # Force the module to re-resolve ENGAGEMENT_DIR.
     import importlib
+
     from src.gateway import main as gateway_main
     importlib.reload(gateway_main)
     # Clear the in-memory task table in case other tests left state.

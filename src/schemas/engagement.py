@@ -128,7 +128,7 @@ class EngagementSpec(BaseModel):
         return "\n".join(lines)
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "EngagementSpec":
+    def from_yaml(cls, path: str | Path) -> EngagementSpec:
         import yaml
 
         with open(path) as fh:

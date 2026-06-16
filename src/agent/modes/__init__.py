@@ -7,9 +7,10 @@ here. Modes are not flags on a single workflow.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from ...schemas.engagement import EngagementMode, EngagementSpec, RulesOfEngagement
 from .ctf import ctf_mode

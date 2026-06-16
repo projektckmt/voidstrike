@@ -20,7 +20,7 @@ ENGAGEMENT_DIR = Path(os.environ.get("ENGAGEMENT_DIR", "./engagements"))
 
 
 def _now() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).isoformat()
+    return _dt.datetime.now(_dt.UTC).isoformat()
 
 
 @tool

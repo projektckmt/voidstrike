@@ -8,14 +8,15 @@ import logging
 import os
 import traceback
 import uuid
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+import redis.asyncio as redis
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-import redis.asyncio as redis
 from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
@@ -27,8 +28,7 @@ log = logging.getLogger("voidstrike.gateway")
 # subscribe race for short-lived clients).
 EVENT_BACKLOG_MAX = 500
 
-from ..schemas.engagement import EngagementSpec
-from ..schemas.findings import StuckReport
+from ..schemas.engagement import EngagementSpec  # noqa: E402
 
 app = FastAPI(title="Voidstrike", version="0.1.0")
 
@@ -492,9 +492,10 @@ async def _run_engagement(
             # the normal `cancelled` event path.
             await _reset_shell_sessions(engagement_id)
 
+        from langchain_core.messages import HumanMessage
+
         from ..agent.main import build_agent
         from ..schemas.engagement import EngagementSpec
-        from langchain_core.messages import HumanMessage
 
         # The system prompt has the engagement context (target, objective, mode);
         # we kick off the loop with a brief operator-style HumanMessage. Without
@@ -567,8 +568,9 @@ async def _run_engagement(
         # MCP server via REST doesn't work (the MCP HTTP transport speaks
         # streamable-http over `/mcp`, not a REST tree).
         try:
-            from ..agent.middleware.skill_proposer import skill_proposer
             from psycopg.rows import dict_row  # noqa: PLC0415
+
+            from ..agent.middleware.skill_proposer import skill_proposer
             proposer = skill_proposer()
             pool = _get_pg_pool()
             await pool.open()
@@ -673,7 +675,7 @@ def _dump(value: Any) -> Any:
     try:
         from langchain_core.messages import BaseMessage  # type: ignore[import-not-found]
     except Exception:  # noqa: BLE001
-        BaseMessage = None  # type: ignore[assignment]
+        BaseMessage = None  # type: ignore[assignment]  # noqa: N806
 
     if BaseMessage is not None and isinstance(value, BaseMessage):
         try:
@@ -1094,7 +1096,7 @@ async def auth_login(provider: str, redirect_uri: str) -> dict[str, str]:
     redirects back to `redirect_uri` with `code` and `state`. Use
     `/auth/{provider}/callback` to exchange the code.
     """
-    from ..auth.oauth import Provider, build_authorization_url
+    from ..auth.oauth import build_authorization_url
 
     if provider not in {"anthropic", "openai", "google"}:
         raise HTTPException(status_code=400, detail="unknown provider")
@@ -1116,7 +1118,7 @@ class CallbackPayload(BaseModel):
 @app.post("/auth/{provider}/callback")
 async def auth_callback(provider: str, payload: CallbackPayload) -> dict[str, Any]:
     """Exchange an authorization code for an access token + persist (encrypted)."""
-    from ..auth.oauth import Provider, exchange_code_for_token
+    from ..auth.oauth import exchange_code_for_token
 
     if provider not in {"anthropic", "openai", "google"}:
         raise HTTPException(status_code=400, detail="unknown provider")

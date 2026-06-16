@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from src.agent.middleware.budget_guard import _BudgetState, _price_step, _resolve_pricing
 
-
 # ---------------------------------------------------------------------------
 # State accounting
 # ---------------------------------------------------------------------------

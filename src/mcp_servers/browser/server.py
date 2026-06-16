@@ -19,7 +19,10 @@ from mcp.server.fastmcp import FastMCP
 
 try:  # Playwright is heavy; we import lazily so the module loads in tests.
     from playwright.async_api import (
-        Browser, BrowserContext, Page, Playwright,
+        Browser,
+        BrowserContext,
+        Page,
+        Playwright,
         async_playwright,
     )
 except ImportError:  # pragma: no cover

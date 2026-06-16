@@ -8,13 +8,13 @@ generic 160-char truncated preview.
 
 from __future__ import annotations
 
-import pytest
-
 
 def _captured(fn, *args, **kwargs) -> str:
-    from src.cli import main as cli
-    from rich.console import Console
     from io import StringIO
+
+    from rich.console import Console
+
+    from src.cli import main as cli
 
     buf = StringIO()
     real = cli.console

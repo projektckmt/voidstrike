@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
 import subprocess
-import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional, TextIO
+from typing import TextIO
 
 import httpx
 import typer
@@ -19,7 +17,6 @@ import yaml
 from rich.console import Console
 from rich.markup import escape as _esc
 from rich.panel import Panel
-from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
@@ -62,7 +59,7 @@ _ENGAGEMENT_ID_PREFIX = re.compile(
 )
 
 
-from collections import deque
+from collections import deque  # noqa: E402
 
 # Maps a langgraph subgraph namespace UUID (e.g. `tools:55c5e535-...`) to the
 # subagent that's actually running there ("surface", "exploit", etc.). The
@@ -160,7 +157,7 @@ def init() -> None:
 @app.command()
 def engage(
     spec: Path = typer.Argument(..., help="Path to engagement YAML spec"),
-    vpn: Optional[Path] = typer.Option(
+    vpn: Path | None = typer.Option(
         None,
         "--vpn",
         help=(
@@ -175,7 +172,7 @@ def engage(
     ),
     profile: str = typer.Option("eco", "--profile", help="eco | max | test"),
     attach: bool = typer.Option(True, "--attach/--detach", help="Stream output to this terminal"),
-    debug_log: Optional[Path] = typer.Option(
+    debug_log: Path | None = typer.Option(
         None,
         "--debug-log",
         help=(
@@ -217,7 +214,7 @@ def engage(
         resp = httpx.post(f"{GATEWAY_URL}/engagements", files=files, data=data, timeout=30.0)
     except httpx.HTTPError as exc:
         console.print(f"[red]Gateway error:[/red] {exc}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from exc
     if resp.status_code != 200:
         console.print(f"[red]Gateway returned {resp.status_code}:[/red] {resp.text}")
         raise typer.Exit(1)
@@ -234,7 +231,7 @@ def engage(
         _attach_stream(engagement_id, on_interrupt="pause", debug_log=debug_log)
 
 
-def _resolve_vpn_path(spec_path: Path, vpn_flag: Optional[Path]) -> Optional[Path]:
+def _resolve_vpn_path(spec_path: Path, vpn_flag: Path | None) -> Path | None:
     """Pick the .ovpn for this engagement.
 
     Precedence: --vpn flag > VPN_FILE env > spec's `vpn_config:` field.
@@ -268,7 +265,7 @@ def _resolve_vpn_path(spec_path: Path, vpn_flag: Optional[Path]) -> Optional[Pat
     return candidate
 
 
-def _find_project_root(start: Path) -> Optional[Path]:
+def _find_project_root(start: Path) -> Path | None:
     """Walk up from `start` looking for infra/docker-compose.yml.
 
     Falls back to walking up from the CWD if the spec lives outside the repo
@@ -324,15 +321,15 @@ def _ensure_vpn_up(vpn_path: Path, project_root: Path) -> None:
             text=True,
             timeout=180,
         )
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
         console.print(
             "[red]`docker` not on PATH.[/red] Install Docker, or pass "
             "--skip-vpn if the sidecar is already up."
         )
-        raise typer.Exit(1)
-    except subprocess.TimeoutExpired:
+        raise typer.Exit(1) from exc
+    except subprocess.TimeoutExpired as exc:
         console.print("[red]VPN bring-up timed out after 180s.[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from exc
 
     if result.returncode != 0:
         console.print(f"[red]docker compose failed:[/red]\n{result.stderr.strip()}")
@@ -342,7 +339,7 @@ def _ensure_vpn_up(vpn_path: Path, project_root: Path) -> None:
 @app.command(name="attach")
 def attach(
     engagement_id: str = typer.Argument(...),
-    debug_log: Optional[Path] = typer.Option(
+    debug_log: Path | None = typer.Option(
         None, "--debug-log",
         help="Append the raw event stream to this file as JSON Lines for analysis.",
     ),
@@ -362,7 +359,7 @@ def resume(
         False, "--detach",
         help="Don't attach to the stream after resuming.",
     ),
-    debug_log: Optional[Path] = typer.Option(
+    debug_log: Path | None = typer.Option(
         None, "--debug-log",
         help="Append the raw event stream to this file as JSON Lines for analysis.",
     ),
@@ -380,7 +377,7 @@ def resume(
 
 @app.command(name="cancel")
 def cancel(
-    engagement_id: Optional[str] = typer.Argument(
+    engagement_id: str | None = typer.Argument(
         None,
         help="The engagement ID to cancel. Omit when using --all.",
     ),
@@ -421,7 +418,7 @@ def _cancel_all(*, skip_confirm: bool) -> None:
         )
     except httpx.HTTPError as exc:
         console.print(f"[red]Gateway unreachable:[/red] {exc}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from exc
     if resp.status_code != 200:
         console.print(f"[red]Gateway returned {resp.status_code}:[/red] {resp.text}")
         raise typer.Exit(1)
@@ -449,7 +446,7 @@ def _cancel_all(*, skip_confirm: bool) -> None:
         )
     except httpx.HTTPError as exc:
         console.print(f"[red]Gateway unreachable:[/red] {exc}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from exc
     if resp.status_code != 200:
         console.print(f"[red]Gateway returned {resp.status_code}:[/red] {resp.text}")
         raise typer.Exit(1)
@@ -493,7 +490,7 @@ def ls(
         )
     except httpx.HTTPError as exc:
         console.print(f"[red]Gateway unreachable:[/red] {exc}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from exc
     if resp.status_code != 200:
         console.print(f"[red]Gateway returned {resp.status_code}:[/red] {resp.text}")
         raise typer.Exit(1)
@@ -549,7 +546,7 @@ def _post_action(engagement_id: str, action: str) -> str:
         return f"gateway unreachable ({exc})"
 
 
-def _open_debug_log(path: Path, engagement_id: str) -> Optional[TextIO]:
+def _open_debug_log(path: Path, engagement_id: str) -> TextIO | None:
     """Open the debug JSONL sink (append) and write a run-delimiter header.
 
     Append mode so a pause→resume (or re-attach) extends the same transcript
@@ -567,7 +564,7 @@ def _open_debug_log(path: Path, engagement_id: str) -> Optional[TextIO]:
     fh.write(json.dumps({
         "event": "_debug_meta",
         "engagement_id": engagement_id,
-        "attached_at": datetime.now(timezone.utc).isoformat(),
+        "attached_at": datetime.now(UTC).isoformat(),
         "note": "raw voidstrike event stream; one JSON event per line",
     }) + "\n")
     fh.flush()
@@ -575,7 +572,7 @@ def _open_debug_log(path: Path, engagement_id: str) -> Optional[TextIO]:
     return fh
 
 
-def _write_debug(fh: Optional[TextIO], event: object) -> None:
+def _write_debug(fh: TextIO | None, event: object) -> None:
     """Append one event to the debug log as a JSON line. Best-effort."""
     if fh is None:
         return
@@ -587,7 +584,7 @@ def _write_debug(fh: Optional[TextIO], event: object) -> None:
 
 
 def _attach_stream(
-    engagement_id: str, *, on_interrupt: str = "detach", debug_log: Optional[Path] = None
+    engagement_id: str, *, on_interrupt: str = "detach", debug_log: Path | None = None
 ) -> None:
     """Attach to the engagement's SSE stream.
 

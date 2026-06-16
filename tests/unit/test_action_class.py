@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from src.agent.middleware.action_class import ActionClass, classify, register
 
 

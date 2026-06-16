@@ -14,7 +14,6 @@ import asyncio
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Gateway: cancel endpoint behavior
 # ---------------------------------------------------------------------------
@@ -78,7 +77,7 @@ def test_cancel_endpoint_cancels_a_running_task(monkeypatch) -> None:
         # Let the cancellation propagate.
         try:
             await asyncio.wait_for(task, timeout=1.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
+        except (TimeoutError, asyncio.CancelledError):
             pass
         gw._engagement_tasks.pop("live-eng", None)
         return result, task
@@ -109,8 +108,8 @@ def test_run_engagement_emits_cancelled_event_on_cancel(monkeypatch, tmp_path) -
     # Stub build_agent to yield an async generator that sleeps long enough
     # for the cancel to land.
     import contextlib
-    import types
     import sys
+    import types
 
     class _FakeAgent:
         async def astream(self, *a, **kw):
@@ -177,8 +176,9 @@ def test_cli_cancel_request_returns_status_string(monkeypatch) -> None:
 def test_cli_cancel_request_handles_gateway_down(monkeypatch) -> None:
     """If the gateway is unreachable, `_request_cancel` must return a
     string explaining that — not propagate the exception."""
-    from src.cli import main as cli
     import httpx as _httpx
+
+    from src.cli import main as cli
 
     def _raise(*a, **kw):
         raise _httpx.ConnectError("connection refused")

@@ -10,7 +10,6 @@ import ipaddress
 from ...schemas.engagement import EngagementSpec, RulesOfEngagement
 from ..prompts.ctf import CTF_ORCHESTRATOR_PROMPT
 
-
 # HTB VPN client (tun0) ranges — the *attacker* side, never a target. HTB
 # machines live in 10.129.0.0/16 (active) and 10.10.10/11.x (retired), which do
 # not overlap these, so seeding them is safe and stops a payload LHOST / staging

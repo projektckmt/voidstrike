@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from src.auth.oauth import _pkce_pair, build_authorization_url

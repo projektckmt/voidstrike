@@ -10,9 +10,6 @@ friendly name as a prefix on tool dispatches and prose lines.
 
 from __future__ import annotations
 
-import pytest
-
-
 # ---------------------------------------------------------------------------
 # Gateway: _unpack_stream_event
 # ---------------------------------------------------------------------------
@@ -79,9 +76,11 @@ def test_subagent_from_namespace_returns_none_for_unknown_segments() -> None:
 
 
 def _captured(fn, *args, **kwargs) -> str:
-    from src.cli import main as cli
-    from rich.console import Console
     from io import StringIO
+
+    from rich.console import Console
+
+    from src.cli import main as cli
 
     buf = StringIO()
     real = cli.console
