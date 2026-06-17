@@ -14,6 +14,8 @@ A small set of subagents (Surface, Exploit, PostEx, Analyst) orchestrated by a m
 
 Bounty · Connected · DevArea · DevHub · Helix · Monteverde · Nibbles · Optimum · Querier · Resolute · SmartHIRE · Support · WingData · Reactor · Kobold
 
+Run any of these unattended with **`voidstrike challenge`** — it spawns the box via the HTB API, solves it, submits the flags, and tears it down ([details](#htb--hackthebox-auto-provisioning-the-challenge-command)).
+
 **Honest capability profile:** getting an initial foothold (a shell on the box) is a near-solved problem here — recon → vuln → exploit lands reliably across a wide range of targets. **Privilege escalation is hit or miss.** Some boxes go straight to root; others stall on the privesc chain (tunnel-vision on the wrong path, a non-obvious lateral hop, an environment-specific trick), which is where most of the ongoing work is focused.
 
 ## Quick start
@@ -36,16 +38,24 @@ docker compose -f infra/docker-compose.yml up -d
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.ops.yml \
     --profile dev-targets up -d
 
-# 3b. (HTB / external) Skip ahead — `voidstrike engage` brings up the VPN
-#     sidecar automatically using the `vpn_config:` field in your engagement
-#     YAML. (Pick exactly one of 3a or the VPN overlay — they're mutually
-#     exclusive because `network_mode: service:vpn` is exclusive with ops-net.)
+# 3b. (HTB / external) Skip ahead — `voidstrike engage`/`challenge` bring up the
+#     VPN sidecar automatically from the `vpn_config:` field in your spec.
+#     (Pick exactly one of 3a or the VPN overlay — they're mutually exclusive
+#     because `network_mode: service:vpn` is exclusive with ops-net.)
 
-# 4. Run an engagement
+# 4. Run it
 voidstrike init                                  # one-time onboarding
-voidstrike engage docs/examples/ctf-htb.yaml \
-    --profile eco
+
+# HackTheBox: `challenge` SPAWNS the box for you, solves it, submits the flags,
+# and tears it down. Spec carries an `htb:` block; no target IP needed.
+# (Requires HTB_TOKEN in .env — see "htb" under Engagement spec.)
+voidstrike challenge docs/examples/htb-challenge.yaml
+
+# A target that already exists (local VM, a box you spawned, a client IP):
+voidstrike engage docs/examples/metasploitable.yaml --profile eco
 ```
+
+For HackTheBox, prefer **`challenge`** — it provisions the machine via the HTB API so you never hand it a per-spawn IP. Use **`engage`** when the target is already up and you're managing it yourself.
 
 The CLI streams every subagent's output (color-coded) to your terminal. The web dashboard (optional) is at http://localhost:3000.
 
@@ -54,7 +64,7 @@ The CLI streams every subagent's output (color-coded) to your terminal. The web 
 `engage`, `attach`, and `resume` all accept `--debug-log <path>`, which records the agent's **entire process** — every tool call, tool result, and model message — as JSON Lines (one event per line):
 
 ```bash
-voidstrike engage docs/examples/ctf-htb.yaml --debug-log logs/run.jsonl
+voidstrike engage docs/examples/metasploitable.yaml --debug-log logs/run.jsonl
 # or capture an already-running engagement:
 voidstrike attach <id> --debug-log logs/run.jsonl
 ```
@@ -67,8 +77,8 @@ The VPN sidecar pattern: a single `vpn` container holds the OpenVPN tunnel, and 
 
 > **Use a TCP `.ovpn`, not UDP.** Under sustained offensive traffic — long `nmap` scans, brute/spray loops, a chatty reverse shell — UDP OpenVPN tunnels tend to drop and silently flap, which surfaces as scans that hang, shells that die mid-command, and "host unreachable" mid-run. A TCP-based config is noticeably more stable for these long-lived, high-connection-count workloads (slower, but it doesn't fall over). If your provider offers both (HackTheBox does), pick the **TCP** profile. If a run keeps losing the target, this is the first thing to check.
 
-- **The `.ovpn` is declared in the engagement YAML.** Set `vpn_config:` to a path (absolute, or relative to the spec file) — `voidstrike engage` resolves it and brings up the vpn sidecar before posting the engagement. Resolution precedence: `--vpn` CLI flag > `VPN_FILE` env var > spec's `vpn_config:`.
-- One VPN per compose stack — to swap targets, change the spec's `vpn_config:` and re-run `voidstrike engage`. Compose recreates the sidecar when the mount source changes.
+- **The `.ovpn` is declared in the engagement YAML.** Set `vpn_config:` to a path (absolute, or relative to the spec file) — `voidstrike engage`/`challenge` resolve it and bring up the vpn sidecar before starting. Resolution precedence: `--vpn` CLI flag > `VPN_FILE` env var > spec's `vpn_config:`.
+- One VPN per compose stack — to swap targets, change the spec's `vpn_config:` and re-run `voidstrike engage`/`challenge`. Compose recreates the sidecar when the mount source changes.
 - While the VPN overlay is active, the local dev targets (DVWA, Juice Shop) on `ops-net` are NOT reachable from the MCP containers. Pick local-dev or VPN, not both.
 - Pass `--skip-vpn` to leave compose alone (use when the sidecar is already up with the right .ovpn, or for a non-VPN run).
 
@@ -129,7 +139,7 @@ roe:
 |---|---|---|---|
 | `name` | yes | — | Engagement label (used in the report + `voidstrike ls`). |
 | `mode` | yes | — | `ctf` \| `lab` \| `engagement` — see [Three modes](#three-modes). |
-| `targets` | yes | `[]` | Hostnames or CIDRs. In ctf/lab these also seed the RoE allowlist. |
+| `targets` | yes* | `[]` | Hostnames or CIDRs; in ctf/lab they also seed the RoE allowlist. *Optional when `htb` is set — the spawned box's IP is filled in for you. |
 | `objective` | no | `"root"` | Free-text goal the orchestrator works toward. |
 | `expected_flags` | no | unset | When set (e.g. `2` for HTB user+root), a deterministic gate forces the analyst handoff once that many flags are recorded. Leave unset for multi-host labs. |
 | `budget_usd` | no | `10.0` | `budget_guard` warns at 80%, hard-stops at 95%. |
@@ -137,6 +147,7 @@ roe:
 | `vpn_config` | no | none | Path to a `.ovpn`; `voidstrike engage` brings up the VPN sidecar. Precedence: `--vpn` > `VPN_FILE` env > this. |
 | `notes` | no | `""` | Operator briefing — see below. |
 | `credentials` | no | `[]` | Assumed-breach credentials — see below. |
+| `htb` | no | none | HackTheBox auto-provisioning (spawn/teardown). When set, run with `voidstrike challenge` — see below. |
 | `roe` | no¹ | auto | Rules of engagement. ¹Required in `engagement` mode (with `signed_document_path`). |
 
 ### `notes` — operator briefing
@@ -157,6 +168,49 @@ A list of credentials the engagement starts with (as in a real "assumed-breach" 
 | `notes` | no | Free text (e.g. "rides the docker group"). |
 
 > Don't pin *derived* secrets (a cracked hash, a shadow-cred NTLM) for a box that re-randomizes per spawn — those go stale. Pin only fixed starting creds, and describe how to re-derive the rest in `notes`.
+
+### `htb` — HackTheBox auto-provisioning (the `challenge` command)
+
+Add an `htb:` block to have the target **spawned, solved, and torn down automatically** through the HTB API, instead of supplying a static `targets:` IP that you spawn/reset by hand. Run such a spec with **`voidstrike challenge`** (not `engage`):
+
+```bash
+voidstrike challenge docs/examples/htb-challenge.yaml
+```
+
+```yaml
+name: htb-support
+mode: ctf
+expected_flags: 2
+htb:
+  machine: Support          # HTB machine name or numeric id (required)
+  teardown: on_complete      # on_complete | on_success | never
+  submit_flags: true         # POST captured flags to HTB to confirm the solve
+  difficulty: 5              # 1..10 rating sent with each flag
+  # reset_before: false      # reset the box to a clean state before the run
+  # kind: retired            # active | retired | release | starting_point (auto-detected if unset)
+  # spawn_timeout_s: 180     # how long to wait for the box to get an IP
+vpn_config: ../machines_us-3.ovpn
+# no `targets:` — the spawned box's IP is filled in automatically
+```
+
+Lifecycle per run: **resolve → spawn → wait for IP → run one engagement against it → submit captured flags → teardown.**
+
+| `htb:` sub-field | Required | Default | Notes |
+|---|---|---|---|
+| `machine` | yes | — | HTB machine name or numeric id. |
+| `kind` | no | auto | `active` \| `retired` \| `release` \| `starting_point`; auto-detected if unset. |
+| `teardown` | no | `on_complete` | `on_complete` (always), `on_success` (only when solved), or `never`. |
+| `submit_flags` | no | `true` | Submit each captured flag to HTB (`own`) to confirm the solve. |
+| `difficulty` | no | `5` | 1–10 rating HTB requires with a flag submission. |
+| `reset_before` | no | `false` | Reset the machine to clean state before starting. |
+| `spawn_timeout_s` | no | `180` | Max wait for the box to get an IP. |
+
+Notes:
+- **Requires `HTB_TOKEN`** (HTB account → *App Tokens*) in the environment or `.env`.
+- The VPN is brought up exactly like `engage` (`vpn_config` / `--vpn` / `VPN_FILE`) — HTB boxes are only reachable over the lab VPN. **Use a TCP `.ovpn`** (see [VPN flow](#vpn-flow)).
+- CLI overrides: `--teardown/--no-teardown` (force the policy), `--force` (terminate a *different* already-spawned machine first), plus the usual `--profile` / `--skip-vpn` / `--debug-log`.
+- **A challenge is atomic:** Ctrl-C cancels the run and still tears the machine down — unlike `engage`, which pauses for `voidstrike resume`.
+- `engage` vs `challenge`: `engage` runs against a target **you** provide and manage; `challenge` is one `engage` run wrapped in HTB spawn → flag-submit → teardown.
 
 ## Three modes
 
@@ -360,16 +414,6 @@ python3 -m venv .venv
 ```
 
 For the full integration loop, you need Docker + a VPN config.
-
-## Build phases (where we are)
-
-- [x] **Phase 0** — scaffolding, RoE gate with unit tests, VPN-in-sandbox infrastructure
-- [x] **Phase 1** — `ctf` mode end-to-end (Surface, Exploit, browser, shell MCP, episodes MCP)
-- [x] **Phase 2** — `lab` mode (breadth tracker), PostEx (SUID enum, kernel suggester, credential loot), ETL enrichment, dashboard pages
-- [x] **Phase 3** — skill proposer with novelty detection, Analyst report builder w/ ATT&CK, signed-RoE validator, benchmark aggregator
-- [x] **Phase 4** — AD specialist + BloodHound MCP, Researcher specialist, async parallel-enum coordinator, OAuth scaffolding
-
-600+ fast unit tests (no Docker required) — `.venv/bin/pytest tests/unit/`.
 
 ## What this is not
 
