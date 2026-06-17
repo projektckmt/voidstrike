@@ -117,7 +117,7 @@ def test_run_engagement_emits_cancelled_event_on_cancel(monkeypatch, tmp_path) -
             yield {}
 
     @contextlib.asynccontextmanager
-    async def _fake_build_agent(spec_path, profile=None):
+    async def _fake_build_agent(spec_path, profile=None, engagement_id=None):
         yield _FakeAgent()
 
     fake_agent_main = types.ModuleType("src.agent.main")
