@@ -79,12 +79,30 @@ class ProvidedCredential(BaseModel):
         return line
 
 
+class HtbConfig(BaseModel):
+    """Optional HackTheBox provisioning for a challenge.
+
+    When present, the challenge runner resolves + spawns the named machine via
+    the HTB API and fills its IP into `targets` at run time (so the spec names a
+    box instead of hardcoding a per-spawn IP), then tears it down after."""
+
+    machine: str                       # machine name or numeric id (required)
+    kind: str | None = None            # active | retired | release | starting_point (auto-detect if unset)
+    reset_before: bool = False         # reset the box to clean state before the run
+    teardown: str = "on_complete"      # on_complete | on_success | never
+    submit_flags: bool = True          # POST captured flags to HTB to confirm "solved"
+    difficulty: int = 5                # 1..10 rating sent with each flag submission
+    spawn_timeout_s: int = 180         # how long to wait for the box to get an IP
+
+
 class EngagementSpec(BaseModel):
     """Loaded from a YAML file the operator supplies."""
 
     name: str
     mode: EngagementMode
     targets: list[str] = Field(default_factory=list)  # hostnames or CIDRs
+    # Optional HTB auto-provisioning; when set, `targets` is resolved at spawn time.
+    htb: HtbConfig | None = None
     objective: str = "root"  # ctf default
     # How many flags constitute "done". When set (e.g. 2 for a user+root HTB
     # box), the completion gate deterministically forces a handoff to the

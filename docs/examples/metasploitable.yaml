@@ -1,0 +1,25 @@
+# Static-target example — a target you've already stood up yourself, so you use
+# `engage` (not `challenge`, which is for HTB boxes it spawns for you).
+#
+# Metasploitable 2 is a deliberately vulnerable Linux VM — run it locally
+# (VirtualBox/VMware), point `targets` at its IP, and:
+#   voidstrike engage docs/examples/metasploitable.yaml
+# No `vpn_config:` — it's a local target the sandbox reaches directly.
+name: metasploitable2
+mode: ctf
+targets:
+  - 192.168.56.101          # your Metasploitable VM's IP
+objective: "root shell + credential loot"
+budget_usd: 3.0
+profile: eco
+# Showcasing the credentials field: Metasploitable's well-known default account.
+credentials:
+  - username: msfadmin
+    secret: "msfadmin"
+    kind: password
+    service: ssh
+    notes: default account (assumed-breach start)
+notes: |
+  Deliberately vulnerable VM — good for exercising the agent end-to-end without a
+  lab subscription. Lots of intended paths (vsftpd 2.3.4 backdoor, UnrealIRCd,
+  distccd, Samba usermap, weak NFS). CTF mode, run hot.

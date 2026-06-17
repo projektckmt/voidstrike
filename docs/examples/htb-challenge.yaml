@@ -1,0 +1,17 @@
+# HTB challenge spec — the box is spawned/solved/torn down for you.
+# Run with:  voidstrike challenge docs/examples/htb-challenge.yaml
+# Requires HTB_TOKEN (env or .env). No `targets:` — the IP is filled in at spawn.
+name: htb-support
+mode: ctf
+objective: "root flag"
+expected_flags: 2          # user + root — forces analyst handoff once both recorded
+budget_usd: 5.0
+profile: eco
+htb:
+  machine: Support         # HTB machine name or numeric id
+  teardown: on_complete    # on_complete | on_success | never
+  submit_flags: true       # POST captured flags to HTB to confirm the solve
+  difficulty: 5            # 1..10 rating sent with each flag
+vpn_config: ../../machines_us-3.ovpn  # resolved relative to this spec file (repo root). Use a TCP .ovpn.
+notes: |
+  Retired HTB easy box. No HITL — run hot.
