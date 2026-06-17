@@ -72,8 +72,18 @@ def stub_mcp_fastmcp(monkeypatch):
 
     fake_mcp = types.ModuleType("mcp")
     fake_server = types.ModuleType("mcp.server")
+    class FakeImage:
+        """Mirror `mcp.server.fastmcp.Image` — the browser server returns it
+        from `screenshot` so the result becomes a vision content block."""
+
+        def __init__(self, path=None, data=None, format=None):
+            self.path = path
+            self.data = data
+            self.format = format
+
     fake_fastmcp_mod = types.ModuleType("mcp.server.fastmcp")
     fake_fastmcp_mod.FastMCP = FakeFastMCP
+    fake_fastmcp_mod.Image = FakeImage
     fake_server.fastmcp = fake_fastmcp_mod
     fake_mcp.server = fake_server
     # The postex server drives the shell server with an MCP *client*

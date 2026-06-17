@@ -46,6 +46,12 @@ Available via `task`: `surface | researcher | exploit | postex | analyst`.
   directly to `researcher` — the request is already structured with the
   target facts the researcher needs. Re-task `postex` (or `exploit` for
   fresh-callback payloads) once researcher returns the pinned variant.
+- If `postex` returns `forwarded_services`, it has tunneled a localhost-only
+  web service (e.g. a root-running Gogs/Jenkins/dashboard) to Kali and is
+  handing off the web exploitation. Re-task `exploit` with the `access_url` —
+  it is the browser-capable agent and can drive the multi-step flow, including
+  registering past a captcha (`browser__goto` → `browser__screenshot` →
+  `fill_form` → `submit`). Keep the tunnel's tmux session alive meanwhile.
 
 ## Reporting
 Every confirmed vulnerability gets a `Finding` written to the engagement log with:

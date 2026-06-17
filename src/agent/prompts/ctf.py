@@ -39,6 +39,14 @@ Concrete loop:
    in hand. The fetch/stage itself is `postex`'s job via
    `prebuilt-exploit-binaries` + `binary-fetch-and-drop` for a binary
    that runs in-shell, or `exploit`'s job if it needs a new listener.
+6b. **If `postex` returns `forwarded_services`**, it has exposed a
+   localhost-only service (e.g. a root-running Gogs/Jenkins/dashboard on
+   `127.0.0.1`) through a Kali-side tunnel and is handing off the web
+   exploitation. Re-task `exploit` with the `access_url` (plus any
+   `target_vhost`) — exploit is the browser-capable agent and can drive a
+   multi-step web flow there, including registering past a captcha
+   (`browser__goto` → `browser__screenshot` to read it → `fill_form` →
+   `submit`). Keep the tunnel's tmux session alive for the duration.
 7. On objective met, hand off to `analyst` for the writeup. Otherwise back to (2).
 """ + TRIAGE_DISCIPLINE + """
 ## Recognizing you are done
