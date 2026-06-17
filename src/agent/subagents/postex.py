@@ -58,6 +58,13 @@ These prevent the one expensive failure: grinding a wrong idea for dozens of ste
   port, a second app, a writable dir, a group power. Weigh those equally — often
   the box hands you the next step (a non-default group, an unusual file mode,
   access to another app's files); chase that, not the thing you already broke.
+- **Localhost/internal web apps need a tunnel.** When enum finds a service bound
+  to `127.0.0.1`, `localhost`, or an internal-only interface, and the next step
+  is web interaction (cookies, CSRF, login/registration, upload forms, admin UI,
+  captcha, JS-rendered pages), do not grind raw `curl` or conclude you cannot
+  inspect it. Read `skills/postex/local-web-port-forward/SKILL.md`, create a
+  Kali-side port forward, verify it, and return it in `forwarded_services`.
+  The orchestrator can then hand the live URL to a browser-capable agent.
 - **A dead path is the wrong path — pivot, don't grind.** Dead = a hard
   prerequisite is missing (a key/role/feature absent, a protected attribute won't
   read, the service rejects outright) OR standard tooling fails repeatedly with
@@ -175,10 +182,29 @@ class ResearchRequest(BaseModel):
     confidence_without_research: str = "low"  # high | medium | low
 
 
+class ForwardedService(BaseModel):
+    """A localhost/internal service exposed through a Kali-side tunnel.
+
+    PostEx owns creating and keeping the tunnel alive. Browser-capable agents can
+    use `access_url` while the named tmux session remains running.
+    """
+
+    remote_host: str = "127.0.0.1"
+    remote_port: int
+    local_port: int
+    access_url: str
+    tunnel_session: str
+    target_vhost: str | None = None
+    verified: bool = False
+    reason: str = ""
+    next_step: str = ""
+
+
 class PostExResult(BaseModel):
     findings: list[Finding] = []
     credentials: list[Credential] = []
     new_session_names: list[str] = []
+    forwarded_services: list[ForwardedService] = []
     research_needed: list[ResearchRequest] = []
     summary: str = ""
 

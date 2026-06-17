@@ -20,6 +20,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     iproute2 iputils-ping dnsutils \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
+# Kali's `wordlists` package ships RockYou compressed. Decompress it at image
+# build time so cracking recipes can use the standard path directly.
+RUN if [ -f /usr/share/wordlists/rockyou.txt.gz ] && [ ! -f /usr/share/wordlists/rockyou.txt ]; then \
+      gzip -dk /usr/share/wordlists/rockyou.txt.gz; \
+    fi
+
 ENV VIRTUAL_ENV=/opt/voidstrike-venv
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 

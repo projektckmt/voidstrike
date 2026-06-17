@@ -168,6 +168,13 @@ class TestPostExSpec:
         assert "postex__linux_basic_enum" in names
         assert "shell__tmux_send" in names
 
+    def test_local_web_forwarding_guidance_and_schema(self) -> None:
+        from src.agent.subagents.postex import POSTEX_PROMPT, PostExResult
+
+        assert "skills/postex/local-web-port-forward/SKILL.md" in POSTEX_PROMPT
+        assert "forwarded_services" in POSTEX_PROMPT
+        assert "forwarded_services" in PostExResult.model_fields
+
 
 class TestAnalystSpec:
     def test_shape(self) -> None:
