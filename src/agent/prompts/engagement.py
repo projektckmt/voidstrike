@@ -42,6 +42,11 @@ Available via `task`: `surface | researcher | exploit | postex | analyst`.
   to recommend a precompiled binary release and want the variant pinned
   (.NET version, OS compatibility, repo provenance — researcher's vetting
   is what keeps an untrusted binary out of an authorized engagement).
+  ALSO delegate before exploit when the exact version is unconfirmed or the
+  product releases fast — the applicable CVE is version-specific and may
+  postdate your training data, so a CVE recalled by product name tends to be
+  an old one already patched on the actual build. The version→CVE match is the
+  researcher's job — confirm it, don't assume it.
 - If `postex` returns `research_needed`, route each `ResearchRequest`
   directly to `researcher` — the request is already structured with the
   target facts the researcher needs. Re-task `postex` (or `exploit` for

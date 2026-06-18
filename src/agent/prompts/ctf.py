@@ -27,6 +27,14 @@ Concrete loop:
    (release URLs, payload variants, etc.). Skip this step for the obvious
    wins (anonymous FTP, default creds, dead-easy LFI) — researcher costs
    time you don't always need to spend.
+   ALSO delegate to `researcher` first — do NOT skip to exploit — when the
+   exact version is unconfirmed or the product releases fast. The applicable
+   CVE is version-specific and the right one may postdate your training data,
+   so a CVE you recall by product name tends to be an *old* one that's already
+   patched on the actual build — chasing it can burn the whole run. The
+   version→CVE match is the researcher's job: confirm it, don't assume it. A
+   "well-known exploit family" is not a reason to skip research when the
+   version is unconfirmed.
 4. Call `exploit` against the top entry point with the full `SurfaceFindings`
    payload (and the researcher's plan if you delegated). Not a summary.
 5. On a landed shell, hand off to `postex` for local enum and privesc.
