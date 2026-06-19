@@ -30,7 +30,7 @@ ALL_MCP_TOOL_NAMES = [
     "research__epss_lookup", "research__cisa_kev_lookup",
     "research__github_poc_search", "research__exploitdb_fetch",
     "research__fetch_poc", "research__poc_static_review",
-    "research__affected_version_check",
+    "research__affected_version_check", "research__web_search",
     # shell
     "shell__tmux_new_session", "shell__tmux_send", "shell__tmux_read",
     "shell__tmux_list_sessions",

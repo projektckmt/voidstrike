@@ -242,7 +242,7 @@ class TestAdSpec:
     ("src.agent.subagents.surface.surface_spec", "surface", 18),  # +browser (recon) +tmux
     ("src.agent.subagents.exploit.exploit_spec", "exploit", 18),  # +tmux_list_sessions (session recovery), +browser__screenshot (read captchas)
     ("src.agent.subagents.postex.postex_spec",   "postex",  11),  # +tmux_list_sessions (session recovery)
-    ("src.agent.subagents.researcher.researcher_spec", "researcher", 17),
+    ("src.agent.subagents.researcher.researcher_spec", "researcher", 18),  # +web_search (open-web fallback)
     ("src.agent.subagents.analyst.analyst_spec", "analyst", 6),
 ])
 def test_subagent_under_tool_budget(spec_fn, name, max_tools):

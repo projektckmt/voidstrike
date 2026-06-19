@@ -8,10 +8,13 @@ the exploit subagent.
 
 from __future__ import annotations
 
+import asyncio
+import html as html_lib
 import os
 import re
+import time
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -24,6 +27,72 @@ app = FastMCP(
 
 HTTP_TIMEOUT = float(os.environ.get("RESEARCH_HTTP_TIMEOUT", "20"))
 MAX_FETCH_CHARS = 12000
+
+# --- NVD throttling guard ---------------------------------------------------
+# NVD's public API rate-limits hard: ~5 requests per rolling 30s window without
+# an API key (50 with one), and it sheds load with 503s and slow responses. The
+# researcher fires cve_lookup / vendor_advisory_search in bursts (often several
+# in one model step), which instantly self-trips a 503. Two defenses:
+#   (3) serialize ALL NVD traffic through one lock and space it out, so a burst
+#       can't exceed the window; and
+#   (2) retry transient 503/429/timeout with exponential backoff, so a throttle
+#       smooths over instead of surfacing as a hard tool failure.
+# The spacing adapts to whether a key is present (set NVD_API_KEY to go faster);
+# both knobs are env-overridable.
+NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+NVD_MAX_RETRIES = int(os.environ.get("NVD_MAX_RETRIES", "3"))
+_NVD_LOCK = asyncio.Lock()
+_nvd_last_request = 0.0
+
+
+def _nvd_min_interval() -> float:
+    """Minimum seconds between NVD requests. ~6s unkeyed (NVD's own guidance),
+    ~0.6s when an API key raises the window to 50/30s. Override via env."""
+    default = "0.6" if os.environ.get("NVD_API_KEY") else "6.0"
+    return float(os.environ.get("NVD_MIN_INTERVAL_S", default))
+
+
+async def _nvd_get(client: httpx.AsyncClient, params: dict[str, Any]) -> httpx.Response:
+    """GET the NVD CVE API behind a global rate-limiter with retry/backoff.
+
+    Serializes through `_NVD_LOCK` and enforces `_nvd_min_interval()` spacing
+    (so concurrent callers queue rather than burst), and retries transient
+    503/429/timeout up to `NVD_MAX_RETRIES` with exponential backoff. Non-
+    transient statuses (e.g. 404) raise immediately, as before, for the caller's
+    existing error handling. Raises the last transient error if retries run out.
+    """
+    global _nvd_last_request
+    interval = _nvd_min_interval()
+    last_exc: Exception | None = None
+
+    for attempt in range(NVD_MAX_RETRIES):
+        resp: httpx.Response | None = None
+        async with _NVD_LOCK:
+            wait = interval - (time.monotonic() - _nvd_last_request)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                resp = await client.get(NVD_URL, params=params)
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                last_exc = exc
+            finally:
+                _nvd_last_request = time.monotonic()
+
+        if resp is not None and resp.status_code not in (429, 503):
+            resp.raise_for_status()  # propagate non-transient 4xx as before
+            return resp
+
+        if resp is not None:  # 429/503 throttle
+            last_exc = httpx.HTTPStatusError(
+                f"NVD {resp.status_code} (rate-limited)",
+                request=resp.request,
+                response=resp,
+            )
+        if attempt < NVD_MAX_RETRIES - 1:
+            await asyncio.sleep(min(interval * (2 ** attempt), 30.0))
+
+    assert last_exc is not None
+    raise last_exc
 
 
 def _headers() -> dict[str, str]:
@@ -129,8 +198,7 @@ async def cve_lookup(
 
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, headers=_headers()) as client:
-            resp = await client.get("https://services.nvd.nist.gov/rest/json/cves/2.0", params=params)
-            resp.raise_for_status()
+            resp = await _nvd_get(client, params)
             data = resp.json()
     except (httpx.HTTPError, ValueError) as exc:
         return {"ok": False, "error": f"NVD lookup failed: {type(exc).__name__}: {exc}"}
@@ -194,8 +262,7 @@ async def _nvd_reference_search(
 ) -> list[dict[str, Any]]:
     params = _nvd_query_params(product, version, cve_id)
     params["resultsPerPage"] = max(1, min(limit, 20))
-    resp = await client.get("https://services.nvd.nist.gov/rest/json/cves/2.0", params=params)
-    resp.raise_for_status()
+    resp = await _nvd_get(client, params)
     refs: list[dict[str, Any]] = []
     for item in (resp.json().get("vulnerabilities") or []):
         cve = item.get("cve") or {}
@@ -259,6 +326,128 @@ async def vendor_advisory_search(
         "github_advisories": github_advisories,
         "nvd_references": nvd_refs,
     }
+
+
+# --- open-web search --------------------------------------------------------
+# Curated sources (NVD / GitHub advisories / Exploit-DB) miss blog write-ups,
+# gist PoCs, and brand-new CVEs. `web_search` is the open-web fallback. It uses
+# Tavily or Brave when a key is present (cleaner, more reliable), else keyless
+# DuckDuckGo HTML — best-effort, since DDG throttles, so a failure is returned
+# softly rather than raised. Results are uniform {title, url, snippet} the
+# researcher then feeds to `fetch_poc` / `browser__goto`.
+_BROWSER_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+_DDG_RESULT_RE = re.compile(
+    r'<a[^>]*class="result__a"[^>]*href="(?P<href>[^"]+)"[^>]*>(?P<title>.*?)</a>', re.S
+)
+_DDG_SNIPPET_RE = re.compile(r'class="result__snippet"[^>]*>(?P<snippet>.*?)</a>', re.S)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html(text: str) -> str:
+    return html_lib.unescape(_TAG_RE.sub("", text)).strip()
+
+
+def _ddg_unwrap(href: str) -> str:
+    """DDG wraps results as //duckduckgo.com/l/?uddg=<url-encoded>&...; unwrap it."""
+    if href.startswith("//"):
+        href = "https:" + href
+    parsed = urlparse(href)
+    if "duckduckgo.com" in parsed.netloc and parsed.path.startswith("/l/"):
+        target = parse_qs(parsed.query).get("uddg")
+        if target:
+            return unquote(target[0])
+    return href
+
+
+def _parse_ddg_html(body: str, limit: int) -> list[dict[str, Any]]:
+    snippets = _DDG_SNIPPET_RE.findall(body)
+    results: list[dict[str, Any]] = []
+    for i, m in enumerate(_DDG_RESULT_RE.finditer(body)):
+        url = _ddg_unwrap(m.group("href"))
+        title = _strip_html(m.group("title"))
+        if url and title:
+            results.append({
+                "title": title,
+                "url": url,
+                "snippet": _strip_html(snippets[i]) if i < len(snippets) else "",
+            })
+        if len(results) >= limit:
+            break
+    return results
+
+
+async def _ddg_search(client: httpx.AsyncClient, query: str, limit: int) -> tuple[str, list[dict[str, Any]]]:
+    resp = await client.get(
+        "https://html.duckduckgo.com/html/",
+        params={"q": query},
+        headers={"User-Agent": _BROWSER_UA},
+    )
+    resp.raise_for_status()
+    return "duckduckgo", _parse_ddg_html(resp.text, limit)
+
+
+async def _tavily_search(client: httpx.AsyncClient, query: str, limit: int, key: str) -> tuple[str, list[dict[str, Any]]]:
+    resp = await client.post(
+        "https://api.tavily.com/search",
+        json={"api_key": key, "query": query, "max_results": limit},
+    )
+    resp.raise_for_status()
+    results = [
+        {"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", "")}
+        for r in (resp.json().get("results") or [])[:limit]
+    ]
+    return "tavily", results
+
+
+async def _brave_search(client: httpx.AsyncClient, query: str, limit: int, key: str) -> tuple[str, list[dict[str, Any]]]:
+    resp = await client.get(
+        "https://api.search.brave.com/res/v1/web/search",
+        params={"q": query, "count": limit},
+        headers={"X-Subscription-Token": key, "Accept": "application/json"},
+    )
+    resp.raise_for_status()
+    web = ((resp.json().get("web") or {}).get("results")) or []
+    results = [
+        {"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("description", "")}
+        for r in web[:limit]
+    ]
+    return "brave", results
+
+
+@app.tool()
+async def web_search(query: str, limit: int = 8) -> dict[str, Any]:
+    """Open-web search for exploits / PoCs / write-ups.
+
+    Use this as a FALLBACK when the curated sources (`cve_lookup`,
+    `github_poc_search`, `exploitdb_fetch`) come up empty or the exact CVE is too
+    new for them. Backend auto-selects: Tavily (`TAVILY_API_KEY`) or Brave
+    (`BRAVE_API_KEY`) when a key is set, otherwise keyless DuckDuckGo (best-effort,
+    may throttle). Returns ranked `{title, url, snippet}` — feed promising URLs to
+    `fetch_poc` or `browser__goto`, and vet anything runnable with the
+    `poc-trust-evaluation` skill before recommending it.
+    """
+    query = (query or "").strip()
+    if not query:
+        return {"ok": False, "error": "need a non-empty query"}
+    limit = max(1, min(int(limit), 20))
+    tavily = os.environ.get("TAVILY_API_KEY")
+    brave = os.environ.get("BRAVE_API_KEY")
+
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, follow_redirects=True) as client:
+            if tavily:
+                source, results = await _tavily_search(client, query, limit, tavily)
+            elif brave:
+                source, results = await _brave_search(client, query, limit, brave)
+            else:
+                source, results = await _ddg_search(client, query, limit)
+    except (httpx.HTTPError, ValueError) as exc:
+        return {"ok": False, "error": f"web search failed ({type(exc).__name__}): {exc}"}
+
+    return {"ok": True, "source": source, "query": query, "results": results}
 
 
 @app.tool()

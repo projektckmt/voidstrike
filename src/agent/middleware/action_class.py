@@ -72,6 +72,7 @@ _TOOL_CLASS: dict[str, ActionClass] = {
     "research__epss_lookup": ActionClass.RECON,
     "research__cisa_kev_lookup": ActionClass.RECON,
     "research__github_poc_search": ActionClass.RECON,
+    "research__web_search": ActionClass.RECON,
     "research__exploitdb_fetch": ActionClass.RECON,
     "research__fetch_poc": ActionClass.RECON,
     "research__poc_static_review": ActionClass.RECON,
