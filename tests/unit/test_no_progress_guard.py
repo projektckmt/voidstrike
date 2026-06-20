@@ -208,6 +208,24 @@ def test_other_iterative_verbs_exempt():
             assert "NO_PROGRESS_BLOCKED" not in getattr(res, "content", ""), verb
 
 
+def test_msfconsole_set_config_is_exempt():
+    # The reported false positive: configuring a Metasploit module sends many
+    # `set <OPT> <val>` lines in a row. Each is productive config, not a flail —
+    # the whole sequence must pass through regardless of threshold.
+    guard = no_progress_guard(max_sends=6)
+    handler, calls = _ok_handler()
+    config = [
+        "set RHOSTS 10.129.31.113", "set VHOST cctv.htb", "set RPORT 80",
+        "set TARGETURI /zm/", "set SSL false", "set LHOST 10.10.16.162",
+        "set LPORT 4444", "set TARGET 0", "set FETCH_WRITABLE_DIR /tmp",
+        "setg RHOSTS 10.129.31.113", "unset SSL",
+    ]
+    for cmd in config:
+        res = _run(guard.awrap_tool_call(_send(cmd, session="msf-main"), handler))
+        assert "NO_PROGRESS_BLOCKED" not in getattr(res, "content", ""), cmd
+    assert len(calls) == len(config)
+
+
 def test_iterative_interlude_does_not_reset_file_flail():
     # An exempt command between file-read sends doesn't mask the flail: the
     # `cat` streak still accumulates across an sshpass interlude.

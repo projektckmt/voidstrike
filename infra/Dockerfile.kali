@@ -20,6 +20,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     iproute2 iputils-ping dnsutils \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
+# Kali's `wordlists` package ships RockYou compressed. Decompress it at image
+# build time so cracking recipes can use the standard path directly.
+RUN if [ -f /usr/share/wordlists/rockyou.txt.gz ] && [ ! -f /usr/share/wordlists/rockyou.txt ]; then \
+      gzip -dk /usr/share/wordlists/rockyou.txt.gz; \
+    fi
+
 ENV VIRTUAL_ENV=/opt/voidstrike-venv
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
@@ -33,6 +39,15 @@ RUN curl -fsSL https://sliver.sh/install | bash || true
 RUN python3 -m venv /opt/bloodyad-venv \
     && /opt/bloodyad-venv/bin/pip install --no-cache-dir bloodyAD \
     && ln -sf /opt/bloodyad-venv/bin/bloodyAD /usr/local/bin/bloodyAD
+
+# Certipy — AD CS (ADCS) enumeration and abuse (ESC1-ESC16: template/ACL abuse,
+# certificate-based auth, NTLM relay to CA, etc.). Same isolation rationale as
+# bloodyAD: its impacket/ldap3/cryptography deps would clash with the project
+# venv (and apt impacket-scripts), so give it its OWN venv and expose the
+# `certipy` CLI on PATH. The PyPI package is `certipy-ad`; the binary is `certipy`.
+RUN python3 -m venv /opt/certipy-venv \
+    && /opt/certipy-venv/bin/pip install --no-cache-dir certipy-ad \
+    && ln -sf /opt/certipy-venv/bin/certipy /usr/local/bin/certipy
 
 # Upstream nuclei — Kali's apt build lags upstream and is compiled WITHOUT the
 # self-update flag (`nuclei -update` doesn't exist there), so pull the release

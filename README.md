@@ -12,7 +12,7 @@ A small set of subagents (Surface, Exploit, PostEx, Analyst) orchestrated by a m
 
 [HackTheBox](https://www.hackthebox.com/) machines Voidstrike has taken to root unattended:
 
-Bounty · Connected · DevArea · DevHub · Helix · Monteverde · Nibbles · Optimum · Querier · Resolute · SmartHIRE · Support · WingData · Reactor · Kobold
+Bounty · Connected · DevArea · DevHub · Helix · Monteverde · Nibbles · Optimum · Querier · Resolute · SmartHIRE · Silentium · Support · WingData · Reactor · Kobold
 
 Run any of these unattended with **`voidstrike challenge`** — it spawns the box via the HTB API, solves it, submits the flags, and tears it down ([details](#htb--hackthebox-auto-provisioning-the-challenge-command)).
 

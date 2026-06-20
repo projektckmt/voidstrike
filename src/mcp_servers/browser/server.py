@@ -9,13 +9,12 @@ Sessions are keyed by `engagement_id` to preserve cookies/state.
 from __future__ import annotations
 
 import asyncio
-import base64
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
 
 try:  # Playwright is heavy; we import lazily so the module loads in tests.
     from playwright.async_api import (
@@ -177,15 +176,25 @@ async def click(engagement_id: str, selector: str, page_name: str = "default") -
 
 
 @app.tool()
-async def screenshot(engagement_id: str, page_name: str = "default", path: str | None = None) -> dict[str, Any]:
-    """Capture a PNG screenshot. Returns base64-encoded bytes (or writes to `path`)."""
+async def screenshot(engagement_id: str, page_name: str = "default", path: str | None = None):
+    """Capture a full-page PNG screenshot of the current browser page.
+
+    With no `path`, the image is returned inline as a vision block so the model
+    can *see* the page (e.g. read a captcha, inspect rendered state) alongside a
+    small text metadata block. With `path`, the PNG is written to that file on
+    the server host and only metadata is returned.
+
+    The return type is intentionally left un-annotated: a `-> dict` annotation
+    makes FastMCP build a structured-output schema that rejects the mixed
+    image+metadata list, which would silently downgrade the image to base64 text.
+    """
     page = await _get_page(engagement_id, page_name)
     img_bytes = await page.screenshot(full_page=True)
     if path:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_bytes(img_bytes)
         return {"ok": True, "path": path, "bytes": len(img_bytes)}
-    return {"ok": True, "image_b64": base64.b64encode(img_bytes).decode(), "bytes": len(img_bytes)}
+    return [Image(data=img_bytes, format="png"), {"ok": True, "bytes": len(img_bytes)}]
 
 
 @app.tool()

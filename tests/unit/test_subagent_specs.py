@@ -168,6 +168,13 @@ class TestPostExSpec:
         assert "postex__linux_basic_enum" in names
         assert "shell__tmux_send" in names
 
+    def test_local_web_forwarding_guidance_and_schema(self) -> None:
+        from src.agent.subagents.postex import POSTEX_PROMPT, PostExResult
+
+        assert "skills/postex/local-web-port-forward/SKILL.md" in POSTEX_PROMPT
+        assert "forwarded_services" in POSTEX_PROMPT
+        assert "forwarded_services" in PostExResult.model_fields
+
 
 class TestAnalystSpec:
     def test_shape(self) -> None:
@@ -233,9 +240,9 @@ class TestAdSpec:
 
 @pytest.mark.parametrize("spec_fn,name,max_tools", [
     ("src.agent.subagents.surface.surface_spec", "surface", 18),  # +browser (recon) +tmux
-    ("src.agent.subagents.exploit.exploit_spec", "exploit", 17),  # +tmux_list_sessions (session recovery)
+    ("src.agent.subagents.exploit.exploit_spec", "exploit", 18),  # +tmux_list_sessions (session recovery), +browser__screenshot (read captchas)
     ("src.agent.subagents.postex.postex_spec",   "postex",  11),  # +tmux_list_sessions (session recovery)
-    ("src.agent.subagents.researcher.researcher_spec", "researcher", 17),
+    ("src.agent.subagents.researcher.researcher_spec", "researcher", 18),  # +web_search (open-web fallback)
     ("src.agent.subagents.analyst.analyst_spec", "analyst", 6),
 ])
 def test_subagent_under_tool_budget(spec_fn, name, max_tools):

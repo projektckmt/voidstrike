@@ -48,6 +48,10 @@ and return a vetted attack plan.
 3. For each candidate CVE:
    - Use `research__github_poc_search` and `exploit__searchsploit_lookup`
      to find one or two POC sources
+   - If the curated sources come up empty (no GitHub/Exploit-DB hit) or the CVE
+     is too new for them, fall back to `research__web_search` — an open-web
+     search for PoCs / write-ups / advisories. Take its result URLs and pull
+     them with `research__fetch_poc` or `browser__goto`.
    - Use `research__exploitdb_fetch` for Exploit-DB hits, or
      `research__fetch_poc` for GitHub/direct POCs, then
      `research__poc_static_review` before recommending it. Browser-read only
@@ -147,6 +151,7 @@ def researcher_spec(profile: Profile, tools: list[Any]) -> dict[str, Any]:
                 "research__epss_lookup",
                 "research__cisa_kev_lookup",
                 "research__github_poc_search",
+                "research__web_search",
                 "research__exploitdb_fetch",
                 "research__fetch_poc",
                 "research__poc_static_review",

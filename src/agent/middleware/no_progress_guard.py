@@ -58,6 +58,17 @@ _ITERATIVE_VERBS = frozenset({
 })
 
 
+# Configuration verbs for interactive consoles (msfconsole, sliver, ...) that
+# are *meant* to be issued many times in a row with different args to set up a
+# module before running it: `set RHOSTS ...`, `set VHOST ...`, `set LHOST ...`,
+# `setg ...`, `unset ...`. Each line is a distinct, productive config step, not a
+# flail — exempt them exactly like the iterative tools above so configuring a
+# module across N sends never trips the guard.
+_CONFIG_VERBS = frozenset({
+    "set", "setg", "unset", "unsetg",
+})
+
+
 # Verbs that carry no enumeration intent — output markers and shell plumbing.
 # The model routinely delimits a batched sweep with `echo CN;` section markers
 # (`echo C1; cat a; echo C2; ls b`); keying the streak on the leading token then
@@ -149,10 +160,12 @@ def no_progress_guard(max_sends: int = 8):
             if not signature:
                 return await handler(request)
 
-            # Credential spraying / brute-force / probing tools are meant to run
-            # many times with different args — that's the workflow, not a flail.
-            # Pass through without counting so we never cut off a legit spray.
-            if any(verb in _ITERATIVE_VERBS for verb in signature):
+            # Credential spraying / brute-force / probing tools — and interactive
+            # console config verbs (msfconsole `set`/`setg`/...) — are meant to run
+            # many times with different args; that's the workflow, not a flail.
+            # Pass through without counting so we never cut off a legit spray or
+            # the multi-`set` configuration of a Metasploit module.
+            if any(verb in _ITERATIVE_VERBS or verb in _CONFIG_VERBS for verb in signature):
                 return await handler(request)
 
             prev_sig, count = streaks.get(session, ((), 0))

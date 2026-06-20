@@ -71,10 +71,9 @@ The target session is for *capturing* the hash. The Kali sandbox is for
    shell__tmux_send("cracker", "EOF")
    ```
 
-4. **Run the cracker on Kali.** `john` is preinstalled; `rockyou.txt.gz`
-   needs unzipping the first time:
+4. **Run the cracker on Kali.** `john` is preinstalled and
+   `/usr/share/wordlists/rockyou.txt` is decompressed in the Kali image:
    ```
-   shell__tmux_send("cracker", "gunzip -k /usr/share/wordlists/rockyou.txt.gz 2>/dev/null; true")
    shell__tmux_send("cracker", "john --wordlist=/usr/share/wordlists/rockyou.txt /tmp/hashes.txt")
    shell__tmux_read("cracker", timeout_s=120)
    ```

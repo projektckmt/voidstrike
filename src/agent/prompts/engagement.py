@@ -42,10 +42,21 @@ Available via `task`: `surface | researcher | exploit | postex | analyst`.
   to recommend a precompiled binary release and want the variant pinned
   (.NET version, OS compatibility, repo provenance — researcher's vetting
   is what keeps an untrusted binary out of an authorized engagement).
+  ALSO delegate before exploit when the exact version is unconfirmed or the
+  product releases fast — the applicable CVE is version-specific and may
+  postdate your training data, so a CVE recalled by product name tends to be
+  an old one already patched on the actual build. The version→CVE match is the
+  researcher's job — confirm it, don't assume it.
 - If `postex` returns `research_needed`, route each `ResearchRequest`
   directly to `researcher` — the request is already structured with the
   target facts the researcher needs. Re-task `postex` (or `exploit` for
   fresh-callback payloads) once researcher returns the pinned variant.
+- If `postex` returns `forwarded_services`, it has tunneled a localhost-only
+  web service (e.g. a root-running Gogs/Jenkins/dashboard) to Kali and is
+  handing off the web exploitation. Re-task `exploit` with the `access_url` —
+  it is the browser-capable agent and can drive the multi-step flow, including
+  registering past a captcha (`browser__goto` → `browser__screenshot` →
+  `fill_form` → `submit`). Keep the tunnel's tmux session alive meanwhile.
 
 ## Reporting
 Every confirmed vulnerability gets a `Finding` written to the engagement log with:
