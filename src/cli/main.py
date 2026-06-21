@@ -170,7 +170,7 @@ def engage(
         "--skip-vpn",
         help="Don't bring up the vpn sidecar (use when it's already running, or for non-VPN runs).",
     ),
-    profile: str = typer.Option("eco", "--profile", help="eco | max | test"),
+    profile: str = typer.Option("eco", "--profile", help="eco | max | test | qwen | gpt"),
     attach: bool = typer.Option(True, "--attach/--detach", help="Stream output to this terminal"),
     debug_log: Path | None = typer.Option(
         None,
@@ -244,7 +244,7 @@ def challenge(
     ),
     skip_vpn: bool = typer.Option(
         False, "--skip-vpn", help="Don't bring up the VPN sidecar."),
-    profile: str = typer.Option("eco", "--profile", help="eco | max | test"),
+    profile: str = typer.Option("eco", "--profile", help="eco | max | test | qwen | gpt"),
     debug_log: Path | None = typer.Option(
         None, "--debug-log", help="Append the raw event stream to this file as JSON Lines."),
 ) -> None:

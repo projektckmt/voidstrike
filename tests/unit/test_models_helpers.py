@@ -147,13 +147,16 @@ def test_model_arg_for_non_anthropic_tier_returns_string(monkeypatch) -> None:
     """A non-anthropic tier falls back to the plain string (the thinking wiring
     is Anthropic-specific) and never builds an instance."""
     monkeypatch.setenv("VOIDSTRIKE_THINKING_EFFORT", "high")
+    # No OpenRouter key → the key-fallback can't fire, so a missing OpenAI key
+    # still yields the plain string (this test is about the thinking path).
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     import src.agent.models as models
     monkeypatch.setattr(
-        models, "model_for", lambda _p, _r: {"model": "openai:gpt-5", "fallbacks": []}
+        models, "model_for", lambda _p, _r: {"model": "openai:gpt-5.5", "fallbacks": []}
     )
     calls = _stub_init_chat_model(monkeypatch)
     out = models.model_arg_for("eco", "exploit")
-    assert out == "openai:gpt-5"
+    assert out == "openai:gpt-5.5"
     assert calls == {}  # init_chat_model was never called
 
 

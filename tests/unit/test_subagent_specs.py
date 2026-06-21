@@ -54,13 +54,19 @@ def _common_assertions(spec: dict, expected_name: str) -> None:
     assert REQUIRED_KEYS.issubset(spec.keys()), \
         f"missing keys: {REQUIRED_KEYS - set(spec.keys())}"
 
-    # `model` must be a provider:model STRING — passing a dict or instance
-    # historically broke profile lookup (or made deepagents call .count on a
-    # dict, etc.).
-    assert isinstance(spec["model"], str), \
-        f"expected model to be a `provider:model` string, got {type(spec['model'])}"
-    assert ":" in spec["model"], \
-        f"model should be in `provider:model` form, got {spec['model']!r}"
+    # `model` must be a `provider:model` STRING or a resolved chat-model instance
+    # (openrouter/litellm-proxy/key-fallback/thinking paths return instances) —
+    # but NEVER the whole ModelChoice dict, which historically broke profile
+    # lookup (deepagents calling .count on a dict, etc.). In the default test env
+    # (no .env, no routing flags) `eco` resolves to plain strings.
+    model = spec["model"]
+    assert not isinstance(model, dict), \
+        f"model must not be the ModelChoice dict, got {model!r}"
+    assert isinstance(model, str) or hasattr(model, "invoke"), \
+        f"expected a `provider:model` string or a chat-model instance, got {type(model)}"
+    if isinstance(model, str):
+        assert ":" in model, \
+            f"model string should be in `provider:model` form, got {model!r}"
 
     # response_format MUST be wrapped — a bare class indicates we'd silently
     # opt into Anthropic's ProviderStrategy which short-circuits the tool loop.

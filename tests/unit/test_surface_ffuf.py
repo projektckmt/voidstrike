@@ -51,14 +51,13 @@ async def test_ffuf_missing_fuzz_points_to_vhost_enum(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ffuf_default_wordlist_is_small_common_list(monkeypatch, tmp_path: Path) -> None:
-    """First pass (no `wordlist=`) must use the small common list, not the old
-    30k-entry raft-medium default — so the initial sweep returns fast."""
+async def test_ffuf_uses_default_wordlist_when_unset(monkeypatch, tmp_path: Path) -> None:
+    """First pass (no `wordlist=`) uses whatever `_default_ffuf_wordlist` returns."""
     from src.mcp_servers.surface import server
 
-    common = tmp_path / "common.txt"
-    common.write_text("admin\nlogin\n")
-    monkeypatch.setattr(server, "_default_ffuf_wordlist", lambda: str(common))
+    default_wl = tmp_path / "raft-medium-directories.txt"
+    default_wl.write_text("admin\nlogin\n")
+    monkeypatch.setattr(server, "_default_ffuf_wordlist", lambda: str(default_wl))
 
     calls: list[list[str]] = []
 
@@ -69,16 +68,16 @@ async def test_ffuf_default_wordlist_is_small_common_list(monkeypatch, tmp_path:
     monkeypatch.setattr(server, "_exec", fake_exec)
     await server.ffuf(url="http://target/FUZZ")  # no wordlist arg
     assert calls, "ffuf should have run with the default wordlist"
-    assert calls[0][calls[0].index("-w") + 1] == str(common)
+    assert calls[0][calls[0].index("-w") + 1] == str(default_wl)
 
 
-def test_default_ffuf_wordlist_prefers_common_over_raft() -> None:
-    """The first candidate is a small common list; raft-medium is only the
-    last-resort fallback."""
+def test_default_ffuf_wordlist_prefers_big() -> None:
+    """The default sweep is SecLists' big.txt (~20k); the common lists are only
+    fallbacks if it isn't installed."""
     from src.mcp_servers.surface import server
 
-    assert "common.txt" in server._FFUF_DEFAULT_WORDLISTS[0]
-    assert "raft-medium" in server._FFUF_DEFAULT_WORDLISTS[-1]
+    assert server._FFUF_DEFAULT_WORDLISTS[0].endswith("/Web-Content/big.txt")
+    assert any("common.txt" in wl for wl in server._FFUF_DEFAULT_WORDLISTS[1:])
 
 
 @pytest.mark.asyncio

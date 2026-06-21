@@ -245,6 +245,9 @@ async def build_agent(
     mode = resolve_mode(spec)
     log.info("engagement mode=%s profile=%s targets=%s", spec.mode, spec.profile, spec.targets)
 
+    from .models import routing_summary
+    log.info("model routing: %s", routing_summary())
+
     mcp_config = await _build_mcp_config()
     if not mcp_config:
         raise RuntimeError(
@@ -566,14 +569,19 @@ def _strip_orchestrator_fs_tools(agent: Any) -> None:
         log.exception("failed to strip orchestrator fs tools — continuing")
 
 
-def _orchestrator_model(profile: str) -> str:
-    """Return the `provider:model` identifier for the orchestrator.
+def _orchestrator_model(profile: str):
+    """Return the orchestrator model value to hand deepagents.
 
-    We pass the string (not a model instance) so that deepagents can look up
-    and apply our registered HarnessProfile (see [profile.py]) — that profile
-    is what excludes the heavy filesystem tools AND the Anthropic prompt-
-    caching middleware. Without those exclusions, the bound tools blow past
-    Anthropic's compile-time grammar limit.
+    For Anthropic/OpenAI/etc. this is the `provider:model` *string* (not a model
+    instance) so that deepagents can look up and apply our registered
+    HarnessProfile (see [profile.py]) — that profile excludes the heavy
+    filesystem tools AND the Anthropic prompt-caching middleware. Without those
+    exclusions, the bound tools blow past Anthropic's compile-time grammar limit.
+
+    For `openrouter:` models `spec_model` returns a pre-built `ChatOpenAI`
+    instance instead (thinking disabled — see models._resolve_openrouter).
+    There's no HarnessProfile registered for openrouter anyway, so nothing is
+    lost by handing deepagents an instance there.
     """
-    from .models import model_for
-    return model_for(profile, "orchestrator")["model"]  # type: ignore[arg-type]
+    from .models import spec_model
+    return spec_model(profile, "orchestrator")  # type: ignore[arg-type]

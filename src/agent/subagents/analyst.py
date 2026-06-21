@@ -10,7 +10,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from ...schemas.findings import Finding
-from ..models import Profile, model_for, tool_response_format
+from ..models import Profile, spec_model, tool_response_format
 
 ANALYST_PROMPT = """You are the **Analyst** subagent. You are invoked at the end
 of an engagement to produce the final report.
@@ -132,6 +132,6 @@ def analyst_spec(profile: Profile, tools: list[Any]) -> dict[str, Any]:
             }
         ],
         "skills": ["skills/analyst/"],
-        "model": model_for(profile, "analyst")["model"],
+        "model": spec_model(profile, "analyst"),
         "response_format": tool_response_format(EngagementReport),
     }

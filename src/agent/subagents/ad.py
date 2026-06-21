@@ -12,7 +12,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from ...schemas.findings import Credential, Finding
-from ..models import Profile, model_for, tool_response_format
+from ..models import Profile, spec_model, tool_response_format
 
 AD_PROMPT = """You are the **AD specialist** subagent. You are invoked when the
 target environment is an Active Directory domain and the BloodHound output
@@ -69,6 +69,6 @@ def ad_spec(profile: Profile, tools: list[Any]) -> dict[str, Any]:
         "system_prompt": AD_PROMPT,
         "tools": [t for t in tools if t.name.startswith(("ad__", "shell__", "episodes__"))],
         "skills": ["skills/ad/"],
-        "model": model_for(profile, "exploit")["model"],  # AD reasoning is closer to exploit-tier
+        "model": spec_model(profile, "exploit"),  # AD reasoning is closer to exploit-tier
         "response_format": tool_response_format(ADResult),
     }

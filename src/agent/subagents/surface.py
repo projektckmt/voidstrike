@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...schemas.findings import SurfaceFindings
-from ..models import Profile, model_for, tool_response_format
+from ..models import Profile, spec_model, tool_response_format
 
 SURFACE_PROMPT = """You are the **Surface** subagent. Your job is to discover and
 characterize the attack surface of the assigned target(s).
@@ -82,13 +82,15 @@ of the conditions above.
 or ~10 empty results — use the budget intentionally:
 
 1. one directory/list pass with the **default wordlist** — leave `wordlist`
-   unset so ffuf uses the small `common.txt` (~4-5k entries); it returns in
-   seconds. Do NOT open with a 30k-entry list like `raft-medium`.
+   unset so ffuf uses `big.txt` (~20k entries) for good coverage. On a slow or
+   rate-limited target, pass
+   `wordlist="/usr/share/seclists/Discovery/Web-Content/common.txt"` (~4-5k) for
+   a fast smoke pass first.
 2. one extension-aware pass tuned to the app stack (php/aspx/jsp)
 3. only if (1)-(2) found a few hits but the app clearly has more surface,
    escalate to a larger wordlist by passing
-   `wordlist="/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt"`
-   (or `raft-large-words.txt`)
+   `wordlist="/usr/share/dirbuster/wordlists/directory-list-2.3-medium.txt"`
+   (~220k) or `raft-large-words.txt`
 4. vhost / subdomain follow-ups, or hitting an interesting subdirectory
    discovered in (1)-(3) as its own root
 
@@ -239,7 +241,7 @@ def surface_spec(profile: Profile, tools: list[Any]) -> dict[str, Any]:
             }
         ],
         "skills": ["skills/surface/"],
-        "model": model_for(profile, "surface")["model"],
+        "model": spec_model(profile, "surface"),
         # ToolStrategy forces the model to *call* a tool to return the
         # structured response, instead of satisfying the schema on its first
         # turn (which is what ProviderStrategy / native structured output

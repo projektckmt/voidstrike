@@ -39,8 +39,16 @@ services:
     image: ghcr.io/berriai/litellm:main-stable
     volumes:
       - ./litellm-config.yaml:/app/config.yaml:ro
-    command: ["--config", "/app/config.yaml", "--port", "4000"]
+      - ./litellm-bootstrap.py:/app/litellm-bootstrap.py:ro
+    # The bootstrap rewrites any model whose native provider key is missing to
+    # route via OpenRouter (mirrors the app's _openrouter_fallback), then execs
+    # the real proxy. Overrides the image's default `litellm` entrypoint.
+    entrypoint: ["python", "/app/litellm-bootstrap.py"]
+    command: []
     env_file: ../.env
+    depends_on:
+      - postgres
+      - redis
     networks: [management-net]
 
   episodes-mcp:
@@ -170,6 +178,10 @@ services:
       # AD specialist is opt-in. Set MCP_AD_URL in your .env (or `--profile ad`
       # plus a one-off `MCP_AD_URL=http://ad-mcp:8080/mcp` export) to enable it.
       MCP_AD_URL: ${MCP_AD_URL:-}
+      # LITELLM_PROXY_URL is the in-network address (overrides any .env value).
+      # VOIDSTRIKE_USE_LITELLM / LITELLM_MASTER_KEY come from `env_file: ../.env`
+      # above — do NOT redeclare them here, since `environment:` wins over
+      # `env_file:` and would clobber the .env values with substitution defaults.
       LITELLM_PROXY_URL: http://litellm:4000
     ports:
       - "127.0.0.1:8000:8000"

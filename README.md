@@ -234,21 +234,34 @@ of mode — use `--profile` on the CLI to override the value in the spec.
 | `eco` (default) | HIGH | MID | HIGH | MID | MID | MID | HIGH |
 | `max` | HIGH | HIGH | HIGH | HIGH | HIGH | HIGH | HIGH |
 | `test` | LOW | LOW | LOW | LOW | LOW | LOW | LOW |
+| `qwen` | every role on `qwen/qwen3.7-max` (via OpenRouter) | | | | | | |
+| `gpt` | every role on `gpt-5.5` | | | | | | |
 
 ¹ The AD specialist (opt-in via `MCP_AD_URL`) rides the Exploit tier.
+² `qwen` and `gpt` are single-model profiles — one model for every role, for
+cost/eval runs off the tiered Anthropic-first defaults.
 
 Tier mappings live in [`src/agent/models.py`](src/agent/models.py); the LiteLLM
 routing chains are in [`infra/litellm-config.yaml`](infra/litellm-config.yaml).
 
 ### Tier → model mapping
 
-LiteLLM routes each tier through a fallback chain. First-choice is listed first; the proxy falls through on rate-limit or outage.
-
 | Tier | Anthropic (1st) | OpenAI (fallback) | Google (fallback) | Local fallback |
 |---|---|---|---|---|
-| **HIGH** | `claude-opus-4-8` | `gpt-5` | `gemini-3-pro` | — |
-| **MID** | `claude-sonnet-4-6` | `gpt-5-mini` | `gemini-flash` | — |
-| **LOW** | `claude-haiku-4-5` | `gpt-5-nano` | — | `qwen3-32b` (Ollama) |
+| **HIGH** | `claude-opus-4-8` | `gpt-5.5` | `gemini-3-pro` | — |
+| **MID** | `claude-sonnet-4-6` | `gpt-5.4-mini` | `gemini-flash` | — |
+| **LOW** | `claude-haiku-4-5` | `gpt-5.4-nano` | — | `qwen3-32b` (Ollama) |
+
+By default the agent routes all model calls through the LiteLLM proxy (requires
+`LITELLM_MASTER_KEY`). That activates the fallback chains in
+[`infra/litellm-config.yaml`](infra/litellm-config.yaml) plus a Redis response
+cache, spend/budget tracking, and Langfuse observability, and routes every model
+including the `qwen`/OpenRouter profile.
+
+Set `VOIDSTRIKE_USE_LITELLM=false` to call each provider's SDK directly instead —
+this preserves Anthropic-native prompt caching (cheaper on Opus-heavy runs), but
+the fallback chain above goes inactive (a first-choice outage is handled by
+per-call retry, not provider failover) and `qwen` talks to OpenRouter directly.
 
 ### Why these choices
 

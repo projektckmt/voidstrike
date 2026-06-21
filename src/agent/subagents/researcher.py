@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-from ..models import Profile, model_for, tool_response_format
+from ..models import Profile, spec_model, tool_response_format
 
 RESEARCHER_PROMPT = """You are the **Researcher** subagent. The orchestrator
 invokes you with a target service (name, version, banner) and a hypothesis
@@ -166,6 +166,6 @@ def researcher_spec(profile: Profile, tools: list[Any]) -> dict[str, Any]:
         # itself, which would load nothing. Researcher gets the exploit tradecraft
         # (incl. poc-trust-evaluation) on top of its own skills.
         "skills": ["skills/researcher/", "skills/exploit/"],
-        "model": model_for(profile, "researcher")["model"],
+        "model": spec_model(profile, "researcher"),
         "response_format": tool_response_format(ResearchResult),
     }

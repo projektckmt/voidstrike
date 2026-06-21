@@ -1018,11 +1018,11 @@ async def ffuf(
     for subdomain/vhost enumeration (that fuzzes the Host header, not the path —
     use `vhost_enum`).
 
-    `wordlist` defaults to a small `common.txt` (~4-5k entries) so the first pass
-    returns fast. Only escalate to a bigger list (e.g.
-    `/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt` or
-    `raft-large-words.txt`) when the common pass found a few hits but the app
-    clearly has more surface — don't open with a 30k-entry list."""
+    `wordlist` defaults to `/usr/share/seclists/Discovery/Web-Content/big.txt`
+    (~20k entries) — good coverage without grinding. Pass `common.txt` (~4-5k) for
+    a fast smoke pass on a slow/rate-limited target, or a larger list
+    (`directory-list-2.3-medium.txt` ~220k, `raft-large-words.txt`) for thorough
+    coverage when big.txt found surface but the app clearly has more."""
     if wordlist is None:
         wordlist = _default_ffuf_wordlist()
     if "FUZZ" not in url:
@@ -1068,6 +1068,10 @@ async def ffuf(
         # path matches the whole wordlist (thousands of entries) → the result is
         # offloaded to /large_tool_results and the agent can't act on it.
         "-ac",
+        # Ignore wordlist comments — harmless on our comment-free default
+        # (big.txt), but skips the `#` header lines if the agent passes a
+        # dirbuster directory-list-2.3 file via `wordlist=`.
+        "-ic",
         "-s",
     ]
     if extensions:
@@ -1227,21 +1231,23 @@ def _shape_ffuf_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
-# First-pass ffuf wordlist: a small "common" list (~4-5k entries) so the initial
-# directory sweep finishes in seconds, not minutes. The agent escalates to bigger
-# lists (raft-medium/large) via the `wordlist=` arg only when the small pass shows
-# there's surface but found little — see the surface prompt's web-fuzzing budget.
-# Tried in order; first that exists wins (dirb's list and SecLists' both ship on Kali).
+# First-pass ffuf wordlist: SecLists' big.txt (~20k entries) — a solid balance of
+# coverage vs. speed for the default sweep, bigger than `common.txt` (~4-5k)
+# without the ~220k cost of directory-list-2.3-medium. The agent can pass a
+# smaller list (`common.txt`) for a fast smoke pass, or a larger one
+# (directory-list-2.3-medium, raft-large) for thorough coverage, via `wordlist=`
+# — see the surface prompt's web-fuzzing budget. Tried in order; first that
+# exists wins (smaller lists remain as fallbacks if big.txt isn't installed).
 _FFUF_DEFAULT_WORDLISTS = (
+    "/usr/share/seclists/Discovery/Web-Content/big.txt",
     "/usr/share/seclists/Discovery/Web-Content/common.txt",
     "/usr/share/wordlists/dirb/common.txt",
-    # Fallback to the old medium default only if neither common list is present.
-    "/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt",
 )
 
 
 def _default_ffuf_wordlist() -> str:
-    """Pick the first available small/common wordlist for the initial ffuf pass."""
+    """Pick the first available default wordlist (raft-medium, else a common list)
+    for the initial ffuf pass."""
     for wl in _FFUF_DEFAULT_WORDLISTS:
         if Path(wl).is_file():
             return wl
