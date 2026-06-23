@@ -243,3 +243,69 @@ def test_default_threshold_is_lenient():
 
     from src.agent.middleware.no_progress_guard import no_progress_guard as npg
     assert inspect.signature(npg).parameters["max_sends"].default == 8
+    assert inspect.signature(npg).parameters["grind_ceiling"].default == 30
+
+
+# --- grind ceiling (rotating-but-unproductive) -----------------------------
+
+# A rotating sweep that never hits the same-verb streak (the real ForceSync-style
+# privesc grind: powershell -> schtasks -> certipy -> dir -> ... for 100+ cmds).
+# Each send has a distinct signature so the streak counter resets every time and
+# never trips; the cross-session ceiling is what must break it.
+_ROTATING = [
+    "whoami /priv", "hostname", "dir C:\\", "systeminfo", "net user",
+    "reg query HKLM", "ipconfig /all", "tasklist", "schtasks /query",
+    "powershell -C Get-Date", "type C:\\x.txt", "sc query",
+]
+
+
+def test_grind_ceiling_blocks_rotating_no_finding():
+    # max_sends high so the per-verb streak never fires — only the ceiling can.
+    guard = no_progress_guard(max_sends=100, grind_ceiling=5)
+    handler, calls = _ok_handler()
+
+    for cmd in _ROTATING[:5]:
+        res = _run(guard.awrap_tool_call(_send(cmd), handler))
+        assert "NO_PROGRESS_BLOCKED" not in getattr(res, "content", ""), cmd
+    # the 6th meaningful command with no finding trips the ceiling
+    res = _run(guard.awrap_tool_call(_send(_ROTATING[5]), handler))
+    assert res.status == "error"
+    assert "NO_PROGRESS_BLOCKED" in res.content
+    assert "research_needed" in res.content
+    assert len(calls) == 5
+
+
+def test_grind_ceiling_resets_on_finding():
+    guard = no_progress_guard(max_sends=100, grind_ceiling=5)
+    handler, _ = _ok_handler()
+
+    for cmd in _ROTATING[:5]:
+        _run(guard.awrap_tool_call(_send(cmd), handler))
+    _run(guard.awrap_tool_call(_request("episodes__write_finding", {"title": "x"}), handler))
+    # after a finding the ceiling window is clear — five more rotating sends pass
+    for cmd in _ROTATING[5:10]:
+        res = _run(guard.awrap_tool_call(_send(cmd), handler))
+        assert "NO_PROGRESS_BLOCKED" not in getattr(res, "content", ""), cmd
+
+
+def test_grind_ceiling_exempts_iterative():
+    # A long credential spray must never trip the ceiling — iterative verbs are
+    # exempt from BOTH counters.
+    guard = no_progress_guard(max_sends=100, grind_ceiling=5)
+    handler, calls = _ok_handler()
+    for i in range(20):
+        res = _run(guard.awrap_tool_call(_send(f"nxc smb 10.0.0.5 -u u -p pw{i}"), handler))
+        assert "NO_PROGRESS_BLOCKED" not in getattr(res, "content", ""), i
+    assert len(calls) == 20
+
+
+def test_grind_ceiling_nudge_is_one_shot():
+    guard = no_progress_guard(max_sends=100, grind_ceiling=5)
+    handler, _ = _ok_handler()
+    for cmd in _ROTATING[:5]:
+        _run(guard.awrap_tool_call(_send(cmd), handler))
+    blocked = _run(guard.awrap_tool_call(_send(_ROTATING[5]), handler))
+    assert "NO_PROGRESS_BLOCKED" in blocked.content
+    # immediately after the nudge the session stays usable
+    res = _run(guard.awrap_tool_call(_send(_ROTATING[6]), handler))
+    assert "NO_PROGRESS_BLOCKED" not in res.content

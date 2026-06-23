@@ -27,7 +27,12 @@ may return a `BaseChatModel` *instance* instead of a string:
    false` opts out). A `ChatOpenAI` instance pointed at the proxy (see
    `_resolve_litellm`) for provider fallback / caching / budget. This takes
    precedence over (1) and (2): *all* models route through the proxy,
-   openrouter/qwen included (the proxy config disables Qwen thinking).
+   openrouter/qwen included (the proxy config disables Qwen thinking). Reasoning
+   still works over the proxy: `model_arg_for` attaches reasoning per provider
+   for the thinking roles (exploit/postex) — OpenAI a `reasoning_effort`,
+   Anthropic the adaptive `thinking` form (see `_proxy_reasoning_kwargs`) — Qwen
+   excepted. Anthropic reasoning needs ANTHROPIC_API_KEY set so the proxy routes
+   Claude native (OpenRouter doesn't forward the adaptive form).
    Applies to the orchestrator too: it forfeits the harness profile's
    *schema* trimming and Anthropic prompt caching, but fs tools are still removed
    from the ToolNode in `main.py` and the grammar crash is handled by tool-name
@@ -43,7 +48,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -69,7 +74,9 @@ QWEN = ["openrouter:qwen/qwen3.7-max"]
 
 # Single-model GPT tier — every role on gpt-5.5. Resolves like any other
 # `openai:` model: through the LiteLLM proxy when enabled, else the native OpenAI
-# SDK, else the OpenRouter key-fallback if OPENAI_API_KEY is absent.
+# SDK, else the OpenRouter key-fallback if OPENAI_API_KEY is absent. The thinking
+# roles (exploit/postex) get reasoning regardless of which of those routes serves
+# the model — see `model_arg_for` / `_proxy_reasoning_effort`.
 GPT = ["openai:gpt-5.5"]
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -242,7 +249,9 @@ def _litellm_model_name(model_id: str) -> str:
     return model_id.replace(":", "/", 1)
 
 
-def _resolve_litellm(model_id: str) -> BaseChatModel | None:
+def _resolve_litellm(
+    model_id: str, *, reasoning_kwargs: dict[str, Any] | None = None
+) -> BaseChatModel | None:
     """Route `model_id` through the LiteLLM proxy as an OpenAI-compatible call,
     or None when the proxy is disabled.
 
@@ -255,7 +264,12 @@ def _resolve_litellm(model_id: str) -> BaseChatModel | None:
     *schema* trimming of fs tools — but those tools are still removed from the
     ToolNode in main.py (`_strip_orchestrator_fs_tools`), and the grammar-limit
     crash was already fixed by tool-name prefixing (see profile.py); so this is a
-    token cost, not a correctness issue."""
+    token cost, not a correctness issue.
+
+    `reasoning_kwargs` are extra `ChatOpenAI` kwargs that turn ON reasoning for the
+    call — provider-specific, built by `_proxy_reasoning_kwargs` (OpenAI gets a
+    `reasoning_effort`; Anthropic gets the adaptive `thinking` form via
+    `extra_body`). The proxy forwards them to the model's real provider."""
     if not _litellm_enabled():
         return None
     api_key = os.environ.get("LITELLM_MASTER_KEY")
@@ -269,6 +283,7 @@ def _resolve_litellm(model_id: str) -> BaseChatModel | None:
         model=_litellm_model_name(model_id),
         base_url=os.environ.get("LITELLM_PROXY_URL", DEFAULT_LITELLM_PROXY_URL),
         api_key=api_key,
+        **(reasoning_kwargs or {}),
     )
 
 
@@ -361,7 +376,8 @@ MODEL_FOR_PROFILE: dict[Profile, dict[Role, ModelChoice]] = {
         "researcher": _chain(QWEN),
     },
     # Every role on gpt-5.5. Single-model profile for running an engagement
-    # entirely on OpenAI — cost/eval lane.
+    # entirely on OpenAI's gpt-5.5 — cost/eval lane (served native or via the
+    # OpenRouter fallback, like any openai: model).
     "gpt": {
         "orchestrator": _chain(GPT),
         "surface": _chain(GPT),
@@ -395,12 +411,72 @@ def model_for(profile: Profile, role: Role) -> ModelChoice:
 _THINKING_ROLES: frozenset[Role] = frozenset({"exploit", "postex"})
 
 # Adaptive-thinking effort levels (Opus 4.7/4.8 surface). Opus accepts all of
-# these; Sonnet 4.6 only the first three (xhigh/max are Opus-tier). Haiku has no
-# effort/adaptive support, so we leave it as a plain string. `budget_tokens` and
-# the `{type:"enabled"}` thinking form are *removed* on Opus 4.8 (they 400), as
-# are `temperature`/`top_p`/`top_k` — see the claude-api skill.
+# these (xhigh/max are Opus-tier). `budget_tokens` and the `{type:"enabled"}`
+# thinking form are *removed* on Opus 4.8 (they 400), as are
+# `temperature`/`top_p`/`top_k` — see the claude-api skill.
 _OPUS_EFFORTS = ("low", "medium", "high", "xhigh", "max")
-_SONNET_EFFORTS = ("low", "medium", "high")
+
+# Our adaptive-thinking effort → LiteLLM's unified `reasoning_effort`
+# (low|medium|high), which the proxy maps to each provider's native reasoning
+# surface. Our scale runs to the Opus-only xhigh/max, so those clamp down to high.
+_PROXY_REASONING_EFFORT = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "high",
+    "max": "high",
+}
+
+
+def _proxy_reasoning_kwargs(model_id: str, role: Role) -> dict[str, Any]:
+    """`ChatOpenAI` kwargs that turn ON reasoning for `(model_id, role)` over the
+    proxy, or `{}` for none.
+
+    Provider-specific, because the proxy forwards to each model's *real* provider
+    and they don't share a reasoning surface — and, crucially, our agent binds
+    `tool_choice="any"` on every turn (ToolStrategy structured output, see
+    langchain `factory.py`), which thinking is often incompatible with:
+
+    - **OpenAI gpt-5.x** → LiteLLM's unified `reasoning_effort` (low|medium|high).
+      OpenAI reasoning models reason fine under a forced tool_choice. (Verified.)
+    - **Anthropic Opus 4.7/4.8** → the *adaptive* thinking form via `extra_body`
+      (`{thinking:{type:adaptive,...}, output_config:{effort}}`). Opus adaptive is
+      the *only* Anthropic thinking that survives a forced tool_choice; it reaches
+      Anthropic only **natively** — set ANTHROPIC_API_KEY so the bootstrap routes
+      Claude native rather than via OpenRouter, which doesn't forward the adaptive
+      form (verified: reasoning_tokens=0 there).
+    - **Anthropic Sonnet/Haiku → nothing.** Verified against the native API: every
+      thinking form (adaptive *and* classic) 400s under a forced tool_choice
+      ("Thinking may not be enabled when tool_choice forces tool use") — only Opus
+      adaptive is exempt. Through the proxy LiteLLM silently strips it (a no-op),
+      so attaching it would just be misleading.
+    - **Gemini / others** → unified `reasoning_effort`; `drop_params` strips it
+      where unsupported.
+    - **Qwen / ollama → nothing** (Qwen's thinking rejects forced tool_choice;
+      ollama is local/no-reasoning)."""
+    effort = _thinking_effort()
+    if not effort or role not in _THINKING_ROLES:
+        return {}
+    if model_id.startswith(("openrouter:qwen/", "ollama:")):
+        return {}
+    if model_id.startswith("anthropic:"):
+        if "opus-4" not in model_id:
+            return {}  # Sonnet/Haiku: thinking ⊥ forced tool_choice (see above)
+        eff = effort if effort in _OPUS_EFFORTS else "high"
+        return {
+            # Adaptive thinking tokens count toward the output cap; mirror the
+            # native path's headroom (ChatAnthropic's 1024 default is too low once
+            # tool-call args are also emitted). Stay under the SDK's ~16k guard.
+            "max_tokens": 8192,
+            "extra_body": {
+                # `display: summarized` populates the thinking-block text so the
+                # CLI can render the model's reasoning (omitted by default on 4.8).
+                "thinking": {"type": "adaptive", "display": "summarized"},
+                "output_config": {"effort": eff},
+            },
+        }
+    # OpenAI / Gemini / other reasoning-capable models — unified effort knob.
+    return {"reasoning_effort": _PROXY_REASONING_EFFORT.get(effort, "high")}
 
 
 def _thinking_effort() -> str:
@@ -426,11 +502,14 @@ def model_arg_for(profile: Profile, role: Role) -> str | BaseChatModel:
     tiers fall back to the plain string.
     """
     model_id = model_for(profile, role)["model"]
-    # Proxy routing wins when enabled — it takes everything, openrouter included,
-    # and is mutually exclusive with adaptive thinking (thinking is Anthropic-
-    # native ChatAnthropic; the proxy speaks the OpenAI surface).
-    if (resolved := _resolve_litellm(model_id)) is not None:
-        return resolved
+    # Proxy routing wins when enabled — it takes everything (openrouter included).
+    # The deepagents `init_chat_model` adaptive path below (ChatAnthropic) is
+    # bypassed, but reasoning still happens over the proxy, attached per provider
+    # for the thinking roles: OpenAI gets a reasoning_effort, Anthropic the
+    # adaptive thinking form (see `_proxy_reasoning_kwargs`).
+    if _litellm_enabled():
+        rk = _proxy_reasoning_kwargs(model_id, role)
+        return _resolve_litellm(model_id, reasoning_kwargs=rk)
     # OpenRouter (direct) — ChatOpenAI w/ thinking disabled; deepagents can't
     # resolve it, and adaptive thinking below is Anthropic-only anyway.
     if (resolved := _resolve_openrouter(model_id)) is not None:
@@ -443,15 +522,14 @@ def model_arg_for(profile: Profile, role: Role) -> str | BaseChatModel:
     effort = _thinking_effort()
     if not effort or role not in _THINKING_ROLES:
         return model_id
-    if "opus-4" in model_id:
-        allowed = _OPUS_EFFORTS
-    elif "sonnet-4-6" in model_id:
-        allowed = _SONNET_EFFORTS
-    else:
-        # Haiku / non-Anthropic tier — no adaptive-thinking support; leave as a
-        # plain string so deepagents resolves it normally.
+    if "opus-4" not in model_id:
+        # Adaptive thinking only on Opus 4.7/4.8. Sonnet 4.6 / Haiku 400 on
+        # thinking under the agent's forced tool_choice ("Thinking may not be
+        # enabled when tool_choice forces tool use"; verified against the native
+        # API), and non-Anthropic tiers have no adaptive surface — leave a plain
+        # string so deepagents resolves it normally.
         return model_id
-    eff = effort if effort in allowed else "high"
+    eff = effort if effort in _OPUS_EFFORTS else "high"
     from langchain.chat_models import init_chat_model
     return init_chat_model(
         model_id,

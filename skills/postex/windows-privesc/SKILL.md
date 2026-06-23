@@ -117,6 +117,45 @@ web-shell foothold) and is usually the fastest route to SYSTEM.
 - **Weak service ACL** (`SERVICE_CHANGE_CONFIG`) → `sc config <svc> binpath= "..."`.
 - **Scheduled task running as SYSTEM** whose script/binary you can modify.
 
+### A task/service runs as a higher-priv user — convert it, don't race it
+
+This is the most-fumbled Windows privesc. The instant the sweep shows a task or
+service whose **RunAs** is `Administrator`/`SYSTEM`, do NOT try to watch, poll, or
+race the running process. Run this deterministic chain — it's 3-4 cheap commands,
+not a polling loop:
+
+1. **Read exactly what it executes.** (The sweep's `Get-ScheduledTask` view has
+   the `Action` already; if you need detail or the task is hidden:)
+   ```
+   schtasks /query /tn "<name>" /xml          REM full definition: Command + Arguments + RunAs
+   REM hidden from schtasks? read the on-disk definition directly:
+   type "C:\Windows\System32\Tasks\<name>"    REM XML: <Command>, <Arguments>, <Principal>
+   reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree" /s
+   ```
+   For a service: `sc qc <svc>` (BINARY_PATH_NAME + SERVICE_START_NAME).
+2. **Check YOUR write access to what it runs — the file AND its parent dir:**
+   ```
+   icacls "<the exact Command path it runs>"
+   icacls "<the parent directory>"            REM write to the dir = replace the file
+   ```
+   Look for `(F)`/`(M)`/`(W)`/`(WD)`/`(AD)` for your user, `Users`,
+   `Authenticated Users`, or a group you're in.
+3. **Decide from write access — this is the whole game:**
+   - **You can write the file (or its dir)** → that is the privesc. Overwrite/plant
+     your payload, then let the task fire on its schedule (poll for the
+     **root-owned** artifact per `privesc-verify` — never `sleep`) or start it
+     (`schtasks /run /tn "<name>"`). A higher-priv runner whose target you can
+     write **is** root; stop looking.
+   - **You can't write it, but you can change what runs** (weak task/service ACL,
+     `schtasks /change /tn .. /tr ..`, `sc config .. binpath=`) → repoint it.
+   - **You can't write or reconfigure anything** → this vector is closed. Record
+     it and hand back `research_needed` naming the task, its Command, and the ACL
+     you observed. Do NOT build pollers or try to inject into the live process.
+
+The failure to avoid: finding "task X runs as Administrator" and then spending
+dozens of commands polling/racing it. If you never ran step 1-2 (what does it
+run, can I write it), you are grinding, not escalating.
+
 ## Kernel + missing patches
 
 `wmic qfe get HotFixID,InstalledOn` (in the sweep) → diff against known LPEs for

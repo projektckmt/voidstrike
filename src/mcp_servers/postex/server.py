@@ -257,7 +257,8 @@ async def linpeas(session_name: str, mode: str = "fast", url: str | None = None)
 @app.tool()
 async def windows_basic_enum(session_name: str) -> dict[str, Any]:
     """Windows enum sweep — identity, privs, OS/patch level, services,
-    installed software, scheduled tasks, stored creds, listening ports.
+    installed software, scheduled tasks (with their executable + run-as user,
+    including ones hidden from `schtasks /query`), stored creds, listening ports.
 
     The output of these checks is exactly what's needed to pin the right
     privesc binary variant (GodPotato `-NET2/-NET35/-NET4`, JuicyPotato vs
@@ -284,6 +285,21 @@ async def windows_basic_enum(session_name: str) -> dict[str, Any]:
         "tasklist /svc",
         # Scheduled tasks (often run as SYSTEM with weak paths).
         "schtasks /query /fo csv /v",
+        # Task -> executable -> run-as, structured, in ONE line. This is the
+        # signal that decides a scheduled-task privesc: a task whose RunAs is a
+        # higher-priv user (Administrator/SYSTEM) and whose Execute path you can
+        # write is a direct root. `schtasks /query` HIDES protected tasks; this
+        # PowerShell view surfaces them, and the on-disk dump below catches the
+        # rest. Read the Action/RunAs columns before trying to interact with any
+        # task — never race a task you haven't inspected.
+        ('powershell -NoProfile -Command "Get-ScheduledTask | ForEach-Object { '
+         "[PSCustomObject]@{ Task=$_.TaskPath+$_.TaskName; "
+         "RunAs=$_.Principal.UserId; "
+         "Action=($_.Actions | ForEach-Object { $_.Execute + ' ' + $_.Arguments }) -join '|' } } | "
+         'Where-Object { $_.RunAs -match \'SYSTEM|Administrator|^NT \' -or $_.Action } | '
+         'Format-Table -AutoSize | Out-String -Width 4096"'),
+        # On-disk task definitions (catches tasks hidden from `schtasks /query`).
+        'dir /a /b "C:\\Windows\\System32\\Tasks" 2>nul',
         # Stored credentials — cmdkey list + creds folder.
         "cmdkey /list",
         'dir /a "C:\\Users\\%USERNAME%\\AppData\\Roaming\\Microsoft\\Credentials" 2>nul',

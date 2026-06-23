@@ -39,6 +39,14 @@ app = FastMCP(
 # prompt + recent output; the agent saw earlier output in earlier reads.
 _TMUX_SCROLLBACK_LINES = 500
 
+# Hard ceiling on the bytes any single read may return, regardless of the
+# `max_bytes` the caller asks for. Each model turn re-sends the full transcript,
+# so an over-large read isn't paid once — it's paid on every subsequent turn for
+# the rest of the session (quadratic). A model that requests 30_000 to "see more"
+# is the exact pathology this caps: bound the *command* (`| head`, `| grep`),
+# don't dump the pane. ~16 KB is plenty for prompt + recent output.
+_MAX_READ_BYTES = 16000
+
 # Default prompt patterns. The agent can override per-session if the target shell
 # has a weird prompt.
 DEFAULT_PROMPT_PATTERNS = [
@@ -251,7 +259,9 @@ async def tmux_read(
     `incremental=True` returns only the new suffix since the last read (handy for
     a chatty listener), but still never returns an empty string — it falls back
     to the recent pane when there's no delta. For genuinely large output, bound
-    the command itself (`| head`, `| grep`) rather than raising `max_bytes`.
+    the command itself (`| head`, `| grep`) rather than raising `max_bytes` —
+    `max_bytes` is hard-capped server-side (a larger value is silently clamped),
+    because an over-large read inflates every later turn's transcript.
 
     With `wait_for_prompt`, polls until a known prompt pattern appears at the
     tail or `timeout_s` elapses. A listener also stops waiting the moment an
@@ -330,9 +340,13 @@ async def tmux_read(
     # guard and the model both rely on it. Even when `incremental=True` is asked
     # for, never return an empty string; fall back to the full pane.
     body = delta if (incremental and delta.strip()) else full
+    # Clamp to the hard ceiling: a caller asking for 30_000 to "see more" only
+    # bloats every following turn's transcript (quadratic). Bound the command
+    # instead. min() so a smaller requested cap is still honoured.
+    capped = min(max_bytes, _MAX_READ_BYTES)
     result: dict[str, Any] = {
         "ok": True,
-        "output": body[-max_bytes:],
+        "output": body[-capped:],
         "new_output": new_output,
         "timed_out": timed_out,
     }

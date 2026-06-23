@@ -121,15 +121,19 @@ def test_model_arg_for_enabled_builds_adaptive_instance(monkeypatch) -> None:
     assert "temperature" not in kw                        # removed on 4.8
 
 
-def test_model_arg_for_clamps_effort_for_sonnet_tier(monkeypatch) -> None:
-    """Sonnet 4.6 (eco/postex) doesn't support xhigh/max — clamp to high."""
+def test_model_arg_for_sonnet_tier_returns_string(monkeypatch) -> None:
+    """Sonnet 4.6 (eco/postex) can't think under the agent's forced tool_choice
+    (Anthropic 400s on thinking+forced-tools — adaptive and classic). So the
+    direct path must NOT build a thinking instance — leave a plain string."""
+    monkeypatch.delenv("VOIDSTRIKE_USE_LITELLM", raising=False)
+    monkeypatch.setenv("VOIDSTRIKE_USE_LITELLM", "false")
     monkeypatch.setenv("VOIDSTRIKE_THINKING_EFFORT", "max")
     calls = _stub_init_chat_model(monkeypatch)
     from src.agent.models import model_arg_for, model_for
     assert "sonnet" in model_for("eco", "postex")["model"]  # guards the premise
     out = model_arg_for("eco", "postex")
-    assert not isinstance(out, str)
-    assert calls["kwargs"]["output_config"] == {"effort": "high"}
+    assert isinstance(out, str)
+    assert calls == {}  # init_chat_model never called
 
 
 def test_model_arg_for_haiku_tier_returns_string(monkeypatch) -> None:
@@ -158,6 +162,147 @@ def test_model_arg_for_non_anthropic_tier_returns_string(monkeypatch) -> None:
     out = models.model_arg_for("eco", "exploit")
     assert out == "openai:gpt-5.5"
     assert calls == {}  # init_chat_model was never called
+
+
+def _stub_chat_openai(monkeypatch):
+    """Replace `langchain_openai.ChatOpenAI` with a recorder so the LiteLLM-proxy
+    branch can be exercised without the real dep or a live proxy. Returns a dict
+    capturing the constructor kwargs."""
+    import sys
+    import types
+
+    calls: dict = {}
+    fake = types.ModuleType("langchain_openai")
+
+    class ChatOpenAI:  # noqa: N801
+        def __init__(self, **kwargs):  # noqa: ANN003
+            calls.update(kwargs)
+
+    fake.ChatOpenAI = ChatOpenAI
+    monkeypatch.setitem(sys.modules, "langchain_openai", fake)
+    return calls
+
+
+def test_gpt_profile_uses_native_openai_id() -> None:
+    """The `gpt` profile uses the native `openai:gpt-5.5` id — routing to
+    OpenRouter (when only that key is set) is left to the fallback, not hardcoded."""
+    from src.agent.models import model_for
+    for role in ("orchestrator", "surface", "exploit", "postex", "analyst", "researcher"):
+        assert model_for("gpt", role)["model"] == "openai:gpt-5.5"
+
+
+@pytest.mark.parametrize(
+    ("effort", "expected"),
+    [("low", "low"), ("medium", "medium"), ("high", "high"), ("xhigh", "high"), ("max", "high")],
+)
+def test_proxy_reasoning_openai_uses_reasoning_effort(monkeypatch, effort, expected) -> None:
+    """OpenAI gpt models get the unified `reasoning_effort`, clamped to high."""
+    monkeypatch.setenv("VOIDSTRIKE_THINKING_EFFORT", effort)
+    from src.agent.models import _proxy_reasoning_kwargs
+    assert _proxy_reasoning_kwargs("openai:gpt-5.5", "exploit") == {"reasoning_effort": expected}
+
+
+def test_proxy_reasoning_opus_uses_adaptive_keeps_effort(monkeypatch) -> None:
+    """Opus gets the adaptive thinking form via extra_body; Opus keeps xhigh/max."""
+    monkeypatch.setenv("VOIDSTRIKE_THINKING_EFFORT", "max")
+    from src.agent.models import _proxy_reasoning_kwargs
+    kw = _proxy_reasoning_kwargs("anthropic:claude-opus-4-8", "exploit")
+    assert kw["max_tokens"] == 8192
+    assert kw["extra_body"]["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert kw["extra_body"]["output_config"] == {"effort": "max"}
+    assert "reasoning_effort" not in kw  # not the OpenAI knob
+
+
+def test_proxy_reasoning_sonnet_excluded(monkeypatch) -> None:
+    """Sonnet 4.6 gets NO reasoning — thinking 400s under our forced tool_choice,
+    so only Opus adaptive qualifies among Anthropic models."""
+    monkeypatch.setenv("VOIDSTRIKE_THINKING_EFFORT", "max")
+    from src.agent.models import _proxy_reasoning_kwargs
+    assert _proxy_reasoning_kwargs("anthropic:claude-sonnet-4-6", "postex") == {}
+
+
+def test_proxy_reasoning_only_thinking_roles(monkeypatch) -> None:
+    monkeypatch.setenv("VOIDSTRIKE_THINKING_EFFORT", "high")
+    from src.agent.models import _proxy_reasoning_kwargs
+    for role in ("orchestrator", "surface", "analyst", "researcher"):
+        assert _proxy_reasoning_kwargs("openai:gpt-5.5", role) == {}
+    for role in ("exploit", "postex"):
+        assert _proxy_reasoning_kwargs("openai:gpt-5.5", role) != {}
+
+
+def test_proxy_reasoning_excludes_qwen_ollama_nonopus_anthropic(monkeypatch) -> None:
+    """Qwen breaks forced tool_choice; ollama doesn't reason; non-Opus Anthropic
+    (Sonnet/Haiku) 400s on thinking+forced-tools → no kwargs for any of them."""
+    monkeypatch.setenv("VOIDSTRIKE_THINKING_EFFORT", "high")
+    from src.agent.models import _proxy_reasoning_kwargs
+    assert _proxy_reasoning_kwargs("openrouter:qwen/qwen3.7-max", "exploit") == {}
+    assert _proxy_reasoning_kwargs("ollama:qwen3:32b", "exploit") == {}
+    assert _proxy_reasoning_kwargs("anthropic:claude-haiku-4-5", "exploit") == {}
+    assert _proxy_reasoning_kwargs("anthropic:claude-sonnet-4-6", "exploit") == {}
+
+
+def test_proxy_reasoning_off_when_unset(monkeypatch) -> None:
+    monkeypatch.delenv("VOIDSTRIKE_THINKING_EFFORT", raising=False)
+    from src.agent.models import _proxy_reasoning_kwargs
+    assert _proxy_reasoning_kwargs("openai:gpt-5.5", "exploit") == {}
+
+
+def test_model_arg_for_gpt_thinking_role_attaches_reasoning(monkeypatch) -> None:
+    """Proxy on + gpt profile + thinking role + effort set → a ChatOpenAI pointed
+    at the proxy's gpt id, carrying the unified reasoning_effort param."""
+    monkeypatch.setenv("VOIDSTRIKE_USE_LITELLM", "true")
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-test")
+    monkeypatch.setenv("VOIDSTRIKE_THINKING_EFFORT", "max")
+    calls = _stub_chat_openai(monkeypatch)
+    from src.agent.models import model_arg_for
+    out = model_arg_for("gpt", "exploit")
+    assert not isinstance(out, str)
+    assert calls["model"] == "openai/gpt-5.5"
+    assert calls["reasoning_effort"] == "high"  # max clamps to high
+
+
+def test_model_arg_for_eco_thinking_role_uses_adaptive(monkeypatch) -> None:
+    """Reasoning is not gpt-only: eco/exploit (Opus) through the proxy gets the
+    adaptive thinking form, not reasoning_effort."""
+    monkeypatch.setenv("VOIDSTRIKE_USE_LITELLM", "true")
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-test")
+    monkeypatch.setenv("VOIDSTRIKE_THINKING_EFFORT", "high")
+    calls = _stub_chat_openai(monkeypatch)
+    from src.agent.models import model_arg_for
+    out = model_arg_for("eco", "exploit")
+    assert not isinstance(out, str)
+    assert calls["model"] == "anthropic/claude-opus-4-8"
+    assert calls["extra_body"]["thinking"]["type"] == "adaptive"
+    assert calls["extra_body"]["output_config"] == {"effort": "high"}
+    assert "reasoning_effort" not in calls
+
+
+def test_model_arg_for_gpt_non_thinking_role_no_reasoning(monkeypatch) -> None:
+    """Non-thinking roles route through the proxy without any reasoning param."""
+    monkeypatch.setenv("VOIDSTRIKE_USE_LITELLM", "true")
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-test")
+    monkeypatch.setenv("VOIDSTRIKE_THINKING_EFFORT", "max")
+    calls = _stub_chat_openai(monkeypatch)
+    from src.agent.models import model_arg_for
+    out = model_arg_for("gpt", "surface")
+    assert not isinstance(out, str)
+    assert calls["model"] == "openai/gpt-5.5"
+    assert "reasoning_effort" not in calls
+    assert "extra_body" not in calls
+
+
+def test_model_arg_for_qwen_thinking_role_no_reasoning(monkeypatch) -> None:
+    """qwen profile exploit/postex must NOT get reasoning (breaks forced tool_choice)."""
+    monkeypatch.setenv("VOIDSTRIKE_USE_LITELLM", "true")
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-test")
+    monkeypatch.setenv("VOIDSTRIKE_THINKING_EFFORT", "max")
+    calls = _stub_chat_openai(monkeypatch)
+    from src.agent.models import model_arg_for
+    out = model_arg_for("qwen", "exploit")
+    assert not isinstance(out, str)
+    assert calls["model"] == "openrouter/qwen/qwen3.7-max"
+    assert "reasoning_effort" not in calls
+    assert "extra_body" not in calls
 
 
 def test_tool_response_format_raises_when_langchain_missing(monkeypatch) -> None:

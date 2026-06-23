@@ -239,8 +239,11 @@ def challenge(
         help="Override the spec's htb.teardown (force terminate-after / keep-running).",
     ),
     force: bool = typer.Option(
-        False, "--force",
-        help="If a DIFFERENT HTB machine is already spawned, terminate it first.",
+        True, "--force/--no-force",
+        help="If a DIFFERENT HTB machine is already spawned, terminate it first "
+             "(default: on — HTB allows one active box at a time, so a leftover "
+             "box just blocks the run). Pass --no-force to error out instead of "
+             "terminating someone else's box.",
     ),
     skip_vpn: bool = typer.Option(
         False, "--skip-vpn", help="Don't bring up the VPN sidecar."),
