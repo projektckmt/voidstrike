@@ -859,17 +859,22 @@ async def nuclei(
     let it finish. Use `max_runtime_s` only to bound a known-slow/flapping host
     (you'll get whatever matched before the cap).
 
-    **Normally call this with just `target`** — by default it scans all
-    severities (like a plain `nuclei -u <target>`), so it picks up the `info`/`low`
-    tech-detection and exposure hits too, not just high-severity CVEs.
+    **Bare `target` = full all-severity sweep** (like `nuclei -u <target>`): use
+    it to fingerprint an unknown host root — it picks up `info`/`low` tech and
+    exposure hits, not just CVEs, but takes minutes. **Once you know what you're
+    scanning, scope it** with `tags=`/`severity=` so you run the relevant template
+    family instead of the whole set — that's the normal way to cut runtime when
+    the target is a specific endpoint or an already-fingerprinted stack.
 
     - `severity`: comma list to filter (e.g. `critical,high,medium`). Default is
-      empty = all severities. Narrow it only if the all-severity run is too noisy.
-    - `tags`: OMIT this unless you know the exact nuclei tag. nuclei tags are a
-      fixed vocabulary — product/framework names like `nextjs`, `nodejs`,
-      `react` are NOT tags and match ZERO templates (the scan returns nothing).
-      Valid examples: `cve`, `exposure`, `misconfig`, `tech`, `wordpress`,
-      `tomcat`. When in doubt, leave it unset rather than guessing.
+      empty = all severities. A floor (e.g. `high,critical`) is a safe way to cut
+      runtime when you don't have a precise tag.
+    - `tags`: scope to a vuln class or technology you've identified (`cve`,
+      `exposure`, `misconfig`, `apache`, `cgi`, `tomcat`, `wordpress`, `rce`,
+      `lfi`). nuclei tags are a FIXED vocabulary — product/framework names like
+      `nextjs`, `nodejs`, `react` are NOT tags and match ZERO templates. If unsure
+      a tag is real, don't guess — use a `severity=` floor or `max_runtime_s=`
+      cap, or leave it unset for the full sweep.
     - `templates`: an explicit template id/path/dir to run instead of the
       default set (e.g. a single `http/cves/2025/CVE-2025-57819.yaml`).
     - `max_runtime_s`: overall wall-clock budget in seconds. Default (unset) =

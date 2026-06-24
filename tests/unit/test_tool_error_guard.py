@@ -59,6 +59,39 @@ def test_generic_exception_is_also_caught():
     assert "MCP server unreachable" in res.content
 
 
+def test_exception_group_is_unwrapped_to_leaf_cause():
+    # anyio/MCP run each tool call in a TaskGroup, so a tool's exception reaches
+    # the guard wrapped as ExceptionGroup whose str() is the useless "unhandled
+    # errors in a TaskGroup (1 sub-exception)". The guard must surface the leaf.
+    guard = tool_error_guard()
+
+    async def handler(request):
+        raise ExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [FileNotFoundError(2, "No such file or directory", "tmux")],
+        )
+
+    res = _run(guard.awrap_tool_call(_request("shell__tmux_new_session"), handler))
+    assert res.status == "error"
+    assert "FileNotFoundError" in res.content
+    assert "tmux" in res.content
+    assert "TaskGroup" not in res.content  # the opaque wrapper is gone
+
+
+def test_nested_exception_group_lists_all_leaves():
+    guard = tool_error_guard()
+
+    async def handler(request):
+        raise ExceptionGroup(
+            "outer",
+            [ExceptionGroup("inner", [OSError("boom"), RuntimeError("nope")])],
+        )
+
+    res = _run(guard.awrap_tool_call(_request(), handler))
+    assert "OSError: boom" in res.content
+    assert "RuntimeError: nope" in res.content
+
+
 def test_successful_result_passes_through():
     guard = tool_error_guard()
     sentinel = SimpleNamespace(content='{"ok": true}', name="shell__tmux_send", status="success")
