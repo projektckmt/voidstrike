@@ -33,11 +33,17 @@ def _install_fake_deepagents(monkeypatch, capture: list) -> None:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
+    class FakeGeneralPurposeSubagentProfile:
+        def __init__(self, *, enabled=True, **kwargs):
+            self.enabled = enabled
+            self.kwargs = kwargs
+
     def fake_register(key, profile):
         capture.append((key, profile))
 
     mod = types.ModuleType("deepagents")
     mod.HarnessProfile = FakeHarnessProfile
+    mod.GeneralPurposeSubagentProfile = FakeGeneralPurposeSubagentProfile
     mod.register_harness_profile = fake_register
     monkeypatch.setitem(sys.modules, "deepagents", mod)
 
@@ -54,6 +60,39 @@ def test_register_calls_register_harness_profile_under_expected_keys(monkeypatch
     assert "anthropic:claude-opus-4-8" in keys
     assert "anthropic:claude-sonnet-4-6" in keys
     assert "anthropic:claude-haiku-4-5" in keys
+    # non-anthropic models (gpt/qwen via ChatOpenAI -> ls_provider="openai")
+    # resolve via the provider-only fallback, so we register that key too.
+    assert "openai" in keys
+
+
+def test_register_disables_general_purpose_subagent_on_every_model(monkeypatch):
+    """The auto-added general-purpose subagent has no shell tools and flails
+    when the orchestrator delegates real work to it — disable it everywhere."""
+    capture: list = []
+    _install_fake_deepagents(monkeypatch, capture)
+
+    from src.agent.profile import register
+    register()
+
+    assert capture, "register() registered nothing"
+    for key, profile in capture:
+        gp = profile.kwargs.get("general_purpose_subagent")
+        assert gp is not None, f"{key} did not set general_purpose_subagent"
+        assert gp.enabled is False, f"{key} left general-purpose enabled"
+
+
+def test_register_openai_profile_does_not_change_tool_surface(monkeypatch):
+    """The openai provider profile only disables general-purpose — it must NOT
+    introduce excluded_tools (that would change gpt/qwen's tool surface)."""
+    capture: list = []
+    _install_fake_deepagents(monkeypatch, capture)
+
+    from src.agent.profile import register
+    register()
+
+    openai_profiles = [p for k, p in capture if k == "openai"]
+    assert openai_profiles, "no openai profile registered"
+    assert not openai_profiles[0].kwargs.get("excluded_tools")
 
 
 def test_register_excludes_heavy_fs_tools(monkeypatch):
