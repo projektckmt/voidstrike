@@ -18,6 +18,7 @@ from typing import Any
 import psycopg
 from neo4j import AsyncGraphDatabase
 
+from . import graphiti_sink
 from .extractors import extract
 
 PG_URL = os.environ.get("POSTGRES_URL", "postgresql://voidstrike:changeme@postgres:5432/voidstrike")
@@ -29,6 +30,8 @@ NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "changeme")
 async def main() -> None:
     driver = AsyncGraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
     await _ensure_schema(driver)
+    # Cross-engagement memory graph (no-op unless GRAPHITI_ENABLED).
+    await graphiti_sink.ensure_indices()
 
     aconn = await psycopg.AsyncConnection.connect(PG_URL, autocommit=True)
     async with aconn.cursor() as cur:
@@ -64,7 +67,8 @@ async def _backfill(aconn: Any, driver: Any) -> None:
     async with aconn.cursor() as cur:
         await cur.execute(
             """
-            SELECT id, engagement_id, agent_name, tool_input, tool_output, outcome_tag
+            SELECT id, engagement_id, agent_name, action, tool_input, tool_output,
+                   outcome_tag, ts
             FROM episodes
             WHERE NOT EXISTS (
                 SELECT 1 FROM episode_etl_marker m WHERE m.episode_id = episodes.id
@@ -79,9 +83,11 @@ async def _backfill(aconn: Any, driver: Any) -> None:
                 "id": row[0],
                 "engagement_id": row[1],
                 "agent_name": row[2],
-                "tool_input": row[3],
-                "tool_output": row[4],
-                "outcome_tag": row[5],
+                "action": row[3],
+                "tool_input": row[4],
+                "tool_output": row[5],
+                "outcome_tag": row[6],
+                "ts": row[7],
             })
 
 
@@ -161,6 +167,10 @@ async def _process_episode(driver: Any, episode: dict[str, Any]) -> None:
                 """,
                 cve=cve, eid=engagement_id,
             )
+
+    # Project into the cross-engagement memory graph. Best-effort and last, so a
+    # Graphiti/LLM failure can never corrupt the per-engagement projection above.
+    await graphiti_sink.ingest_episode(episode, facts)
 
     # Mark this episode as ETL'd so the backfill query doesn't re-pick it.
     # (Connection re-use kept simple — phase 4 can batch.)

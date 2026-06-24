@@ -117,6 +117,10 @@ _TOOL_CLASS: dict[str, ActionClass] = {
     "episodes__summarize_engagement": ActionClass.META,
     "episodes__write_finding": ActionClass.META,
     "episodes__list_findings": ActionClass.META,
+
+    # In-process orchestrator memory tool (no MCP `__` prefix). Read-only recall
+    # over the cross-engagement graph — never a target-facing action.
+    "recall_prior_experience": ActionClass.META,
 }
 
 

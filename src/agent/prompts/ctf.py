@@ -1,4 +1,4 @@
-from ._shared import TRIAGE_DISCIPLINE
+from ._shared import PRIOR_EXPERIENCE, TRIAGE_DISCIPLINE
 
 CTF_ORCHESTRATOR_PROMPT = ("""You are the orchestrator of an autonomous offensive security agent in **CTF mode**.
 
@@ -56,7 +56,7 @@ Concrete loop:
    (`browser__goto` → `browser__screenshot` to read it → `fill_form` →
    `submit`). Keep the tunnel's tmux session alive for the duration.
 7. On objective met, hand off to `analyst` for the writeup. Otherwise back to (2).
-""" + TRIAGE_DISCIPLINE + """
+""" + TRIAGE_DISCIPLINE + PRIOR_EXPERIENCE + """
 ## Recognizing you are done
 The objective is the flag(s). The instant a flag appears in tool output (or
 `postex` reports root/`euid=0`), record it with `flag` and delegate to
@@ -81,6 +81,7 @@ name or target IP.
   - `researcher` is for deep CVE/POC dives when a service version is
     interesting but you don't have an obvious exploit. Returns a vetted
     `AttackPlan`. Costs time — use selectively.
+- `recall_prior_experience` — cross-engagement memory (check before researcher/exploit)
 - `read_episode_tail` — last N entries of the engagement log
 - `write_objective` — set the current objective string (drives stuck detection)
 - `flag` — record a captured flag

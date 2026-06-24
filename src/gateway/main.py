@@ -81,6 +81,42 @@ def _get_pg_pool():
     return _pg_pool
 
 
+# `infra/postgres-init.sql` creates the engagements table, but only on a *fresh*
+# volume's first boot — a pre-existing DB never gets it. Ensure it here too
+# (idempotent), mirroring the self-heal in the episodes MCP server. Columns match
+# postgres-init.sql exactly.
+_ENGAGEMENTS_DDL = """
+CREATE TABLE IF NOT EXISTS engagements (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name            TEXT NOT NULL,
+    mode            TEXT NOT NULL CHECK (mode IN ('ctf','lab','engagement')),
+    profile         TEXT NOT NULL DEFAULT 'eco',
+    spec_yaml       TEXT NOT NULL,
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    ended_at        TIMESTAMPTZ,
+    status          TEXT NOT NULL DEFAULT 'running',
+    budget_usd      NUMERIC(10, 4) NOT NULL DEFAULT 10.0,
+    cost_usd        NUMERIC(10, 4) NOT NULL DEFAULT 0.0,
+    notes           TEXT NOT NULL DEFAULT ''
+);
+"""
+
+_engagements_schema_ready = False
+
+
+async def _ready_engagements_pool():
+    """Open the pool and ensure the engagements table exists (once per process)."""
+    global _engagements_schema_ready
+    pool = _get_pg_pool()
+    await pool.open()
+    if not _engagements_schema_ready:
+        async with pool.connection() as conn:
+            await conn.execute(_ENGAGEMENTS_DDL)
+            await conn.commit()
+        _engagements_schema_ready = True
+    return pool
+
+
 class StartEngagementResponse(BaseModel):
     engagement_id: str
     thread_id: str
@@ -120,6 +156,32 @@ async def start_engagement(
     # Persist the profile so `/resume` can rebuild the agent with the same
     # model tier configuration without requiring the operator to re-specify.
     (out_dir / "profile").write_text(profile)
+
+    # Persist a durable engagements row so `started_at` survives independently of
+    # filesystem mtimes. Best-effort: a DB hiccup must not stop the run starting —
+    # list_engagements falls back to the spec file's mtime when the row is absent.
+    try:
+        parsed_spec = EngagementSpec.from_yaml(spec_path)
+        pool = await _ready_engagements_pool()
+        async with pool.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO engagements (id, name, mode, profile, spec_yaml, budget_usd)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                (
+                    engagement_id,
+                    parsed_spec.name,
+                    parsed_spec.mode.value,
+                    profile,
+                    spec_path.read_text(),
+                    parsed_spec.budget_usd,
+                ),
+            )
+            await conn.commit()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("engagement %s: failed to persist engagements row: %s", engagement_id, exc)
 
     task = asyncio.create_task(
         _run_engagement(str(spec_path), engagement_id, profile),
@@ -853,15 +915,44 @@ async def list_engagements(running: bool = False) -> dict[str, Any]:
     """
     entries = []
     fs_ids: set[str] = set()
+
+    # Durable start times from Postgres, keyed by id. Best-effort: if the DB is
+    # unreachable we fall back per-entry to the spec file's mtime below.
+    started_map: dict[str, str] = {}
+    try:
+        pool = await _ready_engagements_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT id::text, started_at FROM engagements")
+                for row in await cur.fetchall():
+                    if row[1] is not None:
+                        started_map[row[0]] = row[1].isoformat()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("list_engagements: could not read started_at from db: %s", exc)
+
     if ENGAGEMENT_DIR.exists():
         for path in sorted(ENGAGEMENT_DIR.iterdir()):
             if not path.is_dir():
                 continue
             fs_ids.add(path.name)
             spec_file = path / "spec.yaml"
+            # Start time: prefer the durable engagements.started_at row; fall back
+            # to spec.yaml's mtime (written once at kickoff, never touched after)
+            # for engagements that predate the persisted row.
+            created_at = started_map.get(path.name)
+            if created_at is None:
+                import datetime as _dt  # noqa: PLC0415
+                try:
+                    stat_src = spec_file if spec_file.exists() else path
+                    created_at = _dt.datetime.fromtimestamp(
+                        stat_src.stat().st_mtime, _dt.UTC
+                    ).isoformat()
+                except OSError:
+                    created_at = None
             entry: dict[str, Any] = {
                 "engagement_id": path.name,
                 "status": _engagement_status(path.name),
+                "created_at": created_at,
             }
             if spec_file.exists():
                 try:
@@ -888,10 +979,15 @@ async def list_engagements(running: bool = False) -> dict[str, Any]:
             "engagement_id": eng_id,
             "status": "running",
             "name": "(no spec on disk)",
+            "created_at": None,
         })
 
     if running:
         entries = [e for e in entries if e.get("status") == "running"]
+    # Newest first. created_at is a uniform ISO/UTC string, so lexical sort is
+    # chronological; a missing timestamp (running task with no dir yet) is newest,
+    # so it sorts to the top.
+    entries.sort(key=lambda e: e.get("created_at") or "9999", reverse=True)
     return {"engagements": entries}
 
 

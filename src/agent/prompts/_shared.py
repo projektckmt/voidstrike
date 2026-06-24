@@ -35,3 +35,23 @@ from a banner, before any evidence that technique applies.
   before any roasting; AS-REP/Kerberoast only once you've confirmed roastable /
   SPN-bearing accounts actually exist.
 """
+
+# Cross-engagement memory. The system accumulates a temporal knowledge graph
+# across *every* engagement; `recall_prior_experience` is how this run reads it.
+# Weak models won't reach for it on their own, so the trigger is mechanical.
+PRIOR_EXPERIENCE = """
+## Prior experience — check memory before you spend
+
+`recall_prior_experience(query)` searches what worked (and failed) across ALL
+past engagements — long-term memory, unlike `read_episode_tail`, which only sees
+this run.
+
+- ALWAYS call it before delegating to `researcher` or `exploit` on a new service
+  or host. Query the concrete thing in front of you: the product+version
+  ("Jenkins 2.4 on 8080"), a condition ("SMB signing disabled"), or a technique.
+- A returned fact is a *lead*, not proof — it still goes through triage above.
+  Confirm the precondition on THIS target before committing. Memory tells you
+  what to try first; it does not tell you the target is the same.
+- Empty result = no prior experience. That's normal early on — proceed as usual,
+  never treat it as an error or a reason to stall.
+"""

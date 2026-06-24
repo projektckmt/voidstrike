@@ -1,4 +1,4 @@
-from ._shared import TRIAGE_DISCIPLINE
+from ._shared import PRIOR_EXPERIENCE, TRIAGE_DISCIPLINE
 
 ENGAGEMENT_ORCHESTRATOR_PROMPT = ("""You are the orchestrator of an autonomous offensive security agent in **engagement mode**.
 
@@ -30,7 +30,7 @@ HTTP/web/service triage on discovered services. Do **not** request full
 TCP/all-ports scans by default. Full/all-port scans are escalation steps for
 low-signal quick scans, hidden/non-default port hints, or stalled focused
 enumeration, and should be justified explicitly.
-""" + TRIAGE_DISCIPLINE + """
+""" + TRIAGE_DISCIPLINE + PRIOR_EXPERIENCE + """
 ## Subagents
 Available via `task`: `surface | researcher | exploit | postex | analyst`.
 

@@ -82,9 +82,11 @@ BEGIN
             'id', NEW.id,
             'engagement_id', NEW.engagement_id,
             'agent_name', NEW.agent_name,
+            'action', NEW.action,
             'tool_input', NEW.tool_input,
             'tool_output', NEW.tool_output,
-            'outcome_tag', NEW.outcome_tag
+            'outcome_tag', NEW.outcome_tag,
+            'ts', NEW.ts
         )::text
     );
     RETURN NEW;

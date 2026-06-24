@@ -4,6 +4,7 @@ import {
   fetchLabProgress,
   fetchShells,
 } from "@/lib/gateway";
+import EpisodeTimeline from "./EpisodeTimeline";
 
 const SEVERITY_COLOR: Record<string, string> = {
   critical: "#ff3b3b",
@@ -82,33 +83,7 @@ export default async function Engagement({
         ))}
       </section>
 
-      <section>
-        <h3>Episode timeline</h3>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ borderBottom: "1px solid #1f2833" }}>
-              <th style={{ textAlign: "left", padding: 4 }}>ts</th>
-              <th style={{ textAlign: "left", padding: 4 }}>agent</th>
-              <th style={{ textAlign: "left", padding: 4 }}>action</th>
-              <th style={{ textAlign: "left", padding: 4 }}>outcome</th>
-              <th style={{ textAlign: "right", padding: 4 }}>cost</th>
-            </tr>
-          </thead>
-          <tbody>
-            {episodesData.episodes.map((e: any) => (
-              <tr key={e.id}>
-                <td style={{ padding: 4 }}>{e.timestamp?.slice(0, 19)}</td>
-                <td style={{ padding: 4 }}>{e.agent_name}</td>
-                <td style={{ padding: 4 }}>{e.action}</td>
-                <td style={{ padding: 4 }}>{e.outcome_tag}</td>
-                <td style={{ padding: 4, textAlign: "right" }}>
-                  ${Number(e.cost_usd || 0).toFixed(4)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
+      <EpisodeTimeline episodes={episodesData.episodes} />
     </div>
   );
 }

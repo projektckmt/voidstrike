@@ -245,7 +245,7 @@ class TestAdSpec:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("spec_fn,name,max_tools", [
-    ("src.agent.subagents.surface.surface_spec", "surface", 18),  # +browser (recon) +tmux
+    ("src.agent.subagents.surface.surface_spec", "surface", 19),  # +browser (recon) +tmux +write_finding (confirmed no-exploit issues)
     ("src.agent.subagents.exploit.exploit_spec", "exploit", 18),  # +tmux_list_sessions (session recovery), +browser__screenshot (read captchas)
     ("src.agent.subagents.postex.postex_spec",   "postex",  11),  # +tmux_list_sessions (session recovery)
     ("src.agent.subagents.researcher.researcher_spec", "researcher", 18),  # +web_search (open-web fallback)

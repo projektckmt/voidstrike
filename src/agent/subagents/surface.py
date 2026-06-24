@@ -128,6 +128,22 @@ endpoints return 401, exact version 3.0.5`. The researcher owns confirmation.
 - `tool_output` — the salient result (open ports, banners, status codes)
 - `outcome_tag` — `new_finding` if you learned something, else `no_result`
 
+## Findings — only confirmed, no-exploitation issues
+Call `episodes__write_finding` ONLY for issues that are findings *as observed*,
+with no exploitation required to confirm them — what you saw IS the proof:
+- anonymous/guest access granted (FTP/SMB/NFS share you actually listed)
+- directory listing enabled, exposed backup/config/secret reachable unauthenticated
+- credentials or keys visible in a response/banner/page
+- a clearly exposed admin/login panel, missing-auth endpoint returning data
+- security misconfigurations evident from the response itself
+
+NEVER write a finding for a *version-based CVE guess* or anything whose
+exploitability you have not directly observed — those stay `new_finding`
+candidates (see "CVE claims"); the researcher/exploit lane confirms and records
+them. When unsure, it's a candidate, not a finding. Set `severity` honestly
+(usually `info`/`low`/`medium`) and put the observed proof in `evidence`. Pass
+the `engagement_id` verbatim, exactly as for `write_episode`.
+
 Return structured JSON conforming to `SurfaceFindings`.
 """
 
@@ -183,6 +199,10 @@ def surface_spec(profile: Profile, tools: list[Any]) -> dict[str, Any]:
                 "shell__tmux_read",
                 "shell__tmux_list_sessions",
                 "episodes__write_episode",
+                # write_finding is scoped narrowly for surface — see the
+                # "Findings" section of the prompt: confirmed, no-exploitation
+                # issues only (misconfig / info disclosure / exposed creds).
+                "episodes__write_finding",
             }
         ],
         "skills": ["skills/surface/"],

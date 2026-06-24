@@ -22,6 +22,7 @@ dependencies = [
     "playwright>=1.48",
     "psycopg[binary,pool]>=3.2",
     "neo4j>=5.25",
+    "graphiti-core>=0.3",
     "redis>=5.2",
     "litellm>=1.50",
     "pyyaml>=6.0",
