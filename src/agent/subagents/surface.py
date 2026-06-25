@@ -84,13 +84,21 @@ injection probing. You do both because they share one target model.
   SecLists variants.
 
 ## Tool notes
-- **nuclei:** default `surface__nuclei(target=...)` scans all severities (the
-  detection templates also fingerprint the stack and surface `info`/`low`
-  exposures). Optional `tags=` narrows to a known tag once fingerprinted
-  (`wordpress`, `cve`, `exposure`, `tomcat`) and `severity=` cuts noise.
+- **nuclei:** a bare `surface__nuclei(target=...)` runs the full all-severity
+  template set — thorough but several minutes. Use it to *fingerprint* an
+  unknown host root. **Once you already know what you're scanning, scope it** so
+  you run the relevant tens of templates instead of thousands: when the target
+  is a specific endpoint (not a host root) or you've identified the server
+  software / app / endpoint class, pass the matching `tags=` (the vuln class or
+  technology — e.g. `apache`, `cgi`, `tomcat`, `wordpress`, `rce`, `lfi`,
+  `exposure`) and/or a `severity=` floor. This is the normal speed-up, not an
+  exception: a confirmed `cgi-bin` script, a banner-identified server version, a
+  named CMS — each tells you which template family to run.
   **`tags` is a fixed vocabulary, NOT free text** — product names like `nextjs`,
   `nodejs`, `next`, `react` are invalid and match zero templates (empty result).
-  If unsure a tag is real, omit it and run the default all-severity sweep.
+  If you're unsure a tag is real, don't guess it — instead bound the run with a
+  `severity=` floor (e.g. `high,critical`) or `max_runtime_s=` cap, or fall back
+  to the full sweep.
 - **vhost vs path fuzzing:** path fuzzing (`surface__ffuf`, `FUZZ` in URL) and
   vhost/subdomain fuzzing (`surface__vhost_enum`, Host header) are different
   tools. A discovered vhost must be mapped with `surface__add_hosts_entry`
