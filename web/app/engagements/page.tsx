@@ -8,6 +8,7 @@ type Engagement = {
   name?: string;
   mode?: string;
   targets?: string[];
+  created_at?: string | null;
 };
 
 export default function Engagements() {
@@ -20,7 +21,12 @@ export default function Engagements() {
       try {
         const data = await listEngagements();
         if (!cancelled) {
-          setEngagements(data.engagements || []);
+          // Newest first. The gateway already sorts this way; we re-sort
+          // client-side so ordering holds regardless of backend response order.
+          const rows: Engagement[] = [...(data.engagements || [])].sort((a, b) =>
+            (b.created_at || "").localeCompare(a.created_at || "")
+          );
+          setEngagements(rows);
           setError(null);
         }
       } catch (e: any) {
@@ -53,6 +59,7 @@ export default function Engagements() {
               <th style={{ textAlign: "left", padding: 6 }}>name</th>
               <th style={{ textAlign: "left", padding: 6 }}>mode</th>
               <th style={{ textAlign: "left", padding: 6 }}>targets</th>
+              <th style={{ textAlign: "left", padding: 6 }}>started</th>
             </tr>
           </thead>
           <tbody>
@@ -70,6 +77,9 @@ export default function Engagements() {
                 <td style={{ padding: 6 }}>{e.mode || "—"}</td>
                 <td style={{ padding: 6 }}>
                   {(e.targets || []).join(", ") || "—"}
+                </td>
+                <td style={{ padding: 6 }}>
+                  {e.created_at ? new Date(e.created_at).toLocaleString() : "—"}
                 </td>
               </tr>
             ))}

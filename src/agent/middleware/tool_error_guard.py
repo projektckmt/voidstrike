@@ -25,6 +25,27 @@ which counts a repeated failing call.
 from __future__ import annotations
 
 
+def _leaf_exceptions(exc: BaseException) -> list[BaseException]:
+    """Flatten an ExceptionGroup to its non-group leaves (recursively).
+
+    anyio/MCP run each tool call inside a TaskGroup, so any exception a tool
+    raises reaches us wrapped as `ExceptionGroup`, whose `str()` is the useless
+    "unhandled errors in a TaskGroup (N sub-exception)" — the real cause is in
+    `.exceptions`. A plain exception is returned as a single-element list.
+    """
+    if isinstance(exc, BaseExceptionGroup):
+        leaves: list[BaseException] = []
+        for sub in exc.exceptions:
+            leaves.extend(_leaf_exceptions(sub))
+        return leaves or [exc]
+    return [exc]
+
+
+def _describe(exc: BaseException) -> str:
+    """`Type: message`, unwrapping an ExceptionGroup to its underlying cause(s)."""
+    return "; ".join(f"{type(e).__name__}: {e}" for e in _leaf_exceptions(exc))
+
+
 def tool_error_guard():
     """Return middleware that turns tool exceptions into recoverable ToolMessages.
 
@@ -50,7 +71,7 @@ def tool_error_guard():
                 tool_call_id = tool_call.get("id", "") or ""
                 return ToolMessage(
                     content=(
-                        f"TOOL_ERROR: `{tool_name}` raised {type(e).__name__}: {e} "
+                        f"TOOL_ERROR: `{tool_name}` raised {_describe(e)} "
                         "This is recoverable, not fatal — the engagement is still "
                         "running. Check the arguments you sent (required fields and "
                         "types) and retry, or take a different approach."

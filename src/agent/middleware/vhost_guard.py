@@ -20,27 +20,9 @@ middleware doesn't intercept tool calls inside a subagent runtime).
 
 from __future__ import annotations
 
-import json
 from typing import Any
 from urllib.parse import urlsplit
-
-
-def _parse_tool_content(result: Any) -> Any:
-    content = getattr(result, "content", result)
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, dict):
-                parts.append(str(block.get("text", block)))
-            else:
-                parts.append(str(getattr(block, "text", block)))
-        content = "".join(parts)
-    if not isinstance(content, str):
-        return content
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        return None
+from ._util import parse_tool_content as _parse_tool_content
 
 
 def _host_of(base_url: str) -> str:

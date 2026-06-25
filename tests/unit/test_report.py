@@ -85,40 +85,14 @@ def test_markdown_output_contains_sections() -> None:
     assert "Other host" in md
 
 
-def test_no_appendix_section_without_timeline() -> None:
+def test_report_has_no_appendix_section() -> None:
+    # The verbatim command/output appendix was removed — the walkthrough is the
+    # only command record now.
     report = build_report(
         engagement_name="e", mode="ctf", target_summary=["10.0.0.1"],
         findings=[], flags=[], failed_objectives=[],
     )
     assert "## Appendix" not in report.to_markdown()
-
-
-def test_methodology_renders_commands_and_outputs() -> None:
-    timeline = [
-        {
-            "agent_name": "surface", "timestamp": "2026-06-10T00:00:00+00:00",
-            "action": "nmap scan", "tool_input": {"command": "nmap -sV 10.0.0.1"},
-            "tool_output": "22/tcp open ssh\n80/tcp open http",
-            "outcome_tag": "new_finding", "error": None,
-        },
-        {
-            "agent_name": "exploit", "action": "deliver payload",
-            "tool_input": {"url": "http://10.0.0.1/upload"},
-            "tool_output": "x" * 5000,  # exercises the per-step trim
-            "outcome_tag": "shell", "error": None,
-        },
-    ]
-    report = build_report(
-        engagement_name="e", mode="ctf", target_summary=["10.0.0.1"],
-        findings=[], flags=[], failed_objectives=[], timeline=timeline,
-    )
-    md = report.to_markdown()
-    assert "## Appendix — full command & output log" in md
-    assert "$ nmap -sV 10.0.0.1" in md        # command rendered shell-style
-    assert "22/tcp open ssh" in md            # verbatim output
-    assert "http://10.0.0.1/upload" in md     # url key used as command
-    assert "… (output trimmed)" in md         # long output capped
-    assert "`surface`" in md and "`exploit`" in md
 
 
 def test_walkthrough_is_rendered_as_main_body() -> None:
@@ -132,20 +106,3 @@ def test_walkthrough_is_rendered_as_main_body() -> None:
     assert "nmap finds SSH and HTTP" in md
     # walkthrough sits above the structured findings section
     assert md.index("## Walkthrough") < md.index("## Findings by host")
-
-
-def test_appendix_dejsons_tool_output() -> None:
-    timeline = [{
-        "agent_name": "exploit", "action": "shell__tmux_exec",
-        "tool_input": {"command": "id"},
-        "tool_output": '{"ok": true, "output": "uid=0(root) gid=0(root)", "new_output": true}',
-        "outcome_tag": "no_result", "error": None,
-    }]
-    report = build_report(
-        engagement_name="e", mode="ctf", target_summary=["10.0.0.1"],
-        findings=[], flags=[], failed_objectives=[], timeline=timeline,
-    )
-    md = report.to_markdown()
-    assert "$ id" in md
-    assert "uid=0(root) gid=0(root)" in md   # inner stdout surfaced
-    assert '"ok": true' not in md            # JSON envelope stripped

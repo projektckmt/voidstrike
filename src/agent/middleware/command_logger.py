@@ -137,7 +137,10 @@ def command_logger(engagement_id: str | None, agent_name: str, *, pg_url: str | 
                     output = _stringify_output(result)
                     status = getattr(result, "status", "")
                     error = output if status == "error" else None
-                    outcome = "error" if status == "error" else "no_result"
+                    # `ok`, not `no_result`: this auto-logs that a tool *ran*, it
+                    # doesn't inspect the output. `no_result`/`new_finding` are the
+                    # agent's own assertions via episodes__write_episode.
+                    outcome = "error" if status == "error" else "ok"
                     await asyncio.to_thread(
                         _insert_episode,
                         url, engagement_id, agent_name, name, args, output, outcome, error,

@@ -164,53 +164,6 @@ async def read_episode_tail(engagement_id: str, n: int = 30) -> dict[str, Any]:
     return {"ok": True, "count": len(episodes), "episodes": episodes}
 
 
-# Cap on methodology-log steps pulled into the report — a writeup wants the
-# full narrative, but an unbounded run shouldn't produce a multi-MB report.md.
-_TIMELINE_MAX_STEPS = 500
-
-
-def _load_episode_timeline(engagement_id: str) -> list[dict[str, Any]]:
-    """Read the full episode log in chronological order for the methodology
-    writeup. Best-effort: a DB hiccup yields an empty timeline, never a failed
-    report (the findings sections don't depend on this)."""
-    import psycopg  # noqa: PLC0415
-    from psycopg.rows import dict_row  # noqa: PLC0415
-
-    pg_url = os.environ.get(
-        "POSTGRES_URL", "postgresql://voidstrike:changeme@postgres:5432/voidstrike"
-    )
-    try:
-        with psycopg.connect(pg_url) as conn:
-            with conn.cursor(row_factory=dict_row) as cur:
-                cur.execute(
-                    """
-                    SELECT agent_name, ts, action, tool_input, tool_output,
-                           outcome_tag, error
-                    FROM episodes
-                    WHERE engagement_id = %s
-                    ORDER BY ts ASC
-                    LIMIT %s
-                    """,
-                    (engagement_id, _TIMELINE_MAX_STEPS),
-                )
-                rows = cur.fetchall()
-    except Exception:  # noqa: BLE001 — timeline is optional; never block the report
-        return []
-
-    return [
-        {
-            "agent_name": r["agent_name"],
-            "timestamp": r["ts"].isoformat() if r["ts"] else None,
-            "action": r["action"],
-            "tool_input": r["tool_input"],
-            "tool_output": r["tool_output"],
-            "outcome_tag": r["outcome_tag"],
-            "error": r["error"],
-        }
-        for r in rows
-    ]
-
-
 @tool
 def render_report(
     engagement_id: str,
@@ -223,7 +176,6 @@ def render_report(
     executive_summary: str = "",
     episode_summary: str = "",
     walkthrough: str = "",
-    include_timeline: bool = True,
 ) -> dict[str, Any]:
     """Build the final engagement report (Markdown) from collected state.
 
@@ -234,21 +186,14 @@ def render_report(
     `walkthrough` is your authored narrative (oxdf/HTB-writeup style) — prose
     organized by phase with fenced `$ <command>` + key-output blocks quoted
     verbatim from the episode log. It becomes the report's main "## Walkthrough"
-    section. Quote real commands only; the deterministic appendix is the ground
-    truth you draw from.
-
-    When `include_timeline` is set (default), the full episode log — every
-    command and its output — is replayed chronologically into the appendix
-    section. The data comes straight from the
-    episode log, so the commands and outputs are verbatim, not LLM-transcribed.
+    section and is the ONLY command record in the report, so include the steps
+    that matter; quote real commands only, never invent.
     """
     from .report import build_report
 
     flag_path = ENGAGEMENT_DIR / engagement_id / "flags.txt"
     if flags is None and flag_path.exists():
         flags = [line.strip() for line in flag_path.read_text().splitlines() if line.strip()]
-
-    timeline = _load_episode_timeline(engagement_id) if include_timeline else []
 
     report = build_report(
         engagement_name=engagement_name,
@@ -260,7 +205,6 @@ def render_report(
         executive_summary=executive_summary,
         episode_summary=episode_summary,
         walkthrough=walkthrough,
-        timeline=timeline,
     )
 
     out_path = ENGAGEMENT_DIR / engagement_id / "report.md"
@@ -270,7 +214,6 @@ def render_report(
         "ok": True,
         "path": str(out_path),
         "severity_rollup": report.severity_rollup,
-        "timeline_steps": len(timeline),
     }
 
 

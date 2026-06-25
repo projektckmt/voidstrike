@@ -84,13 +84,21 @@ injection probing. You do both because they share one target model.
   SecLists variants.
 
 ## Tool notes
-- **nuclei:** default `surface__nuclei(target=...)` scans all severities (the
-  detection templates also fingerprint the stack and surface `info`/`low`
-  exposures). Optional `tags=` narrows to a known tag once fingerprinted
-  (`wordpress`, `cve`, `exposure`, `tomcat`) and `severity=` cuts noise.
+- **nuclei:** a bare `surface__nuclei(target=...)` runs the full all-severity
+  template set — thorough but several minutes. Use it to *fingerprint* an
+  unknown host root. **Once you already know what you're scanning, scope it** so
+  you run the relevant tens of templates instead of thousands: when the target
+  is a specific endpoint (not a host root) or you've identified the server
+  software / app / endpoint class, pass the matching `tags=` (the vuln class or
+  technology — e.g. `apache`, `cgi`, `tomcat`, `wordpress`, `rce`, `lfi`,
+  `exposure`) and/or a `severity=` floor. This is the normal speed-up, not an
+  exception: a confirmed `cgi-bin` script, a banner-identified server version, a
+  named CMS — each tells you which template family to run.
   **`tags` is a fixed vocabulary, NOT free text** — product names like `nextjs`,
   `nodejs`, `next`, `react` are invalid and match zero templates (empty result).
-  If unsure a tag is real, omit it and run the default all-severity sweep.
+  If you're unsure a tag is real, don't guess it — instead bound the run with a
+  `severity=` floor (e.g. `high,critical`) or `max_runtime_s=` cap, or fall back
+  to the full sweep.
 - **vhost vs path fuzzing:** path fuzzing (`surface__ffuf`, `FUZZ` in URL) and
   vhost/subdomain fuzzing (`surface__vhost_enum`, Host header) are different
   tools. A discovered vhost must be mapped with `surface__add_hosts_entry`
@@ -127,6 +135,22 @@ endpoints return 401, exact version 3.0.5`. The researcher owns confirmation.
 - `agent_name="surface"`, `action` — the tool you ran (e.g. `surface__nmap_quick`)
 - `tool_output` — the salient result (open ports, banners, status codes)
 - `outcome_tag` — `new_finding` if you learned something, else `no_result`
+
+## Findings — only confirmed, no-exploitation issues
+Call `episodes__write_finding` ONLY for issues that are findings *as observed*,
+with no exploitation required to confirm them — what you saw IS the proof:
+- anonymous/guest access granted (FTP/SMB/NFS share you actually listed)
+- directory listing enabled, exposed backup/config/secret reachable unauthenticated
+- credentials or keys visible in a response/banner/page
+- a clearly exposed admin/login panel, missing-auth endpoint returning data
+- security misconfigurations evident from the response itself
+
+NEVER write a finding for a *version-based CVE guess* or anything whose
+exploitability you have not directly observed — those stay `new_finding`
+candidates (see "CVE claims"); the researcher/exploit lane confirms and records
+them. When unsure, it's a candidate, not a finding. Set `severity` honestly
+(usually `info`/`low`/`medium`) and put the observed proof in `evidence`. Pass
+the `engagement_id` verbatim, exactly as for `write_episode`.
 
 Return structured JSON conforming to `SurfaceFindings`.
 """
@@ -183,6 +207,10 @@ def surface_spec(profile: Profile, tools: list[Any]) -> dict[str, Any]:
                 "shell__tmux_read",
                 "shell__tmux_list_sessions",
                 "episodes__write_episode",
+                # write_finding is scoped narrowly for surface — see the
+                # "Findings" section of the prompt: confirmed, no-exploitation
+                # issues only (misconfig / info disclosure / exposed creds).
+                "episodes__write_finding",
             }
         ],
         "skills": ["skills/surface/"],

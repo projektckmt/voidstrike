@@ -24,6 +24,7 @@ read statelessly from `request.state`, so each `task()` invocation starts fresh.
 from __future__ import annotations
 
 from typing import Any
+from ._util import messages_from_state as _messages_from_state
 
 # Tools the subagent may always call, even past the budget — they're how it
 # wraps up (records progress) before returning.
@@ -31,12 +32,6 @@ _WRAPUP_TOOLS = frozenset({
     "episodes__write_episode",
     "episodes__write_finding",
 })
-
-
-def _messages_from_state(state: Any) -> list[Any]:
-    if isinstance(state, dict):
-        return state.get("messages") or []
-    return getattr(state, "messages", None) or []
 
 
 def step_budget(max_steps: int = 130):

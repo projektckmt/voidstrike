@@ -10,27 +10,9 @@ outcome and forces a structured hand-back after a small number of repeats.
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Any
 from urllib.parse import urlsplit
-
-
-def _parse_tool_content(result: Any) -> Any:
-    content = getattr(result, "content", result)
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, dict):
-                parts.append(str(block.get("text", block)))
-            else:
-                parts.append(str(getattr(block, "text", block)))
-        content = "".join(parts)
-    if not isinstance(content, str):
-        return content
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        return None
+from ._util import parse_tool_content as _parse_tool_content
 
 
 def _normalized_path(url: str) -> str:

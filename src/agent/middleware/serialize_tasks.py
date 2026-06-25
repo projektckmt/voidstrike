@@ -33,12 +33,7 @@ Attach to the **orchestrator** only: subagents don't carry the `task` tool.
 from __future__ import annotations
 
 from typing import Any
-
-
-def _messages_from_state(state: Any) -> list[Any]:
-    if isinstance(state, dict):
-        return state.get("messages") or []
-    return getattr(state, "messages", None) or []
+from ._util import messages_from_state as _messages_from_state
 
 
 def _sibling_task_ids(messages: list[Any], tool_call_id: str) -> list[str]:

@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field
 class OutcomeTag(StrEnum):
     NEW_FINDING = "new_finding"
     DUPLICATE = "duplicate"
-    NO_RESULT = "no_result"
+    OK = "ok"  # a tool ran without error — what the auto-logger stamps. NOT "found something".
+    NO_RESULT = "no_result"  # ran but produced nothing useful (agent-asserted)
     ERROR = "error"
     BLOCKED_BY_ROE = "blocked_by_roe"
     SHELL_LANDED = "shell_landed"

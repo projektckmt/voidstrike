@@ -21,12 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from typing import Any
-
-
-def _messages_from_state(state: Any) -> list[Any]:
-    if isinstance(state, dict):
-        return state.get("messages") or []
-    return getattr(state, "messages", None) or []
+from ._util import messages_from_state as _messages_from_state
 
 
 def request_budget(tools: str | Iterable[str], max_calls: int, *, marker: str, directive: str):

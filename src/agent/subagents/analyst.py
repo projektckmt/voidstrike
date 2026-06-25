@@ -9,7 +9,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from ...schemas.findings import Finding
 from ..models import Profile, spec_model, tool_response_format
 
 ANALYST_PROMPT = """You are the **Analyst** subagent. You are invoked at the end
@@ -27,8 +26,11 @@ of an engagement to produce the final report.
   prose instead.
 - NEVER invent findings — everything in the report must be backed by an episode.
 - NEVER editorialize about defenders or claim "they should have known."
-- Return structured JSON conforming to `EngagementReport` (prose in the
-  descriptive fields), not plain prose.
+- The full report (walkthrough, per-finding detail) goes to disk via
+  `render_report`. Your returned `EngagementReport` is only a LIGHTWEIGHT summary
+  for the orchestrator — an executive summary plus one-line finding *references*
+  ({title, host, severity, ATT&CK ids}). NEVER re-dump full finding prose into the
+  return; that's what `render_report` already wrote.
 
 ## Inputs available to you
 - Episode log for the full engagement (`episodes__read_engagement`)
@@ -68,8 +70,9 @@ HTB writeup:
   instructive.
 - Call out the specific artifacts that made each step work: the exact endpoint,
   payload, file path, credential/key location, config value.
-The deterministic full command log is appended automatically as the appendix —
-the walkthrough is the curated, explained version, not a dump.
+The walkthrough is the ONLY command record in the report (there is no raw
+appendix) — so quote the commands and key output that matter, verbatim from the
+log, while keeping it a curated narrative rather than a full dump.
 
 ## How to finish — MANDATORY
 
@@ -86,14 +89,13 @@ Concretely:
 2. Call `render_report(engagement_id=..., engagement_name=..., mode=...,
    targets=..., findings=[...], executive_summary=..., episode_summary=...,
    walkthrough=...)` — pass your authored narrative as `walkthrough` (it becomes
-   the report's main "## Walkthrough" section). It returns
-   `{ok, path, severity_rollup, timeline_steps}`. `render_report` also appends
-   the full verbatim command log as the ground-truth appendix automatically, so
-   the appendix is handled for you — your job is the curated walkthrough on top.
-   Leave `include_timeline` at its default unless the operator asked to omit the
-   appendix.
-3. Then return your structured `EngagementReport`. The orchestrator reads it
-   to know *what* happened; operators read `report.md` to see the writeup.
+   the report's main "## Walkthrough" section and the only command record).
+   It returns `{ok, path, severity_rollup}`.
+3. Then return your structured `EngagementReport` — a SHORT summary: the
+   executive summary, finding *references* (title/host/severity/ATT&CK ids), and
+   any failed objectives. Do NOT restate full finding descriptions here; they're
+   already in `report.md`. The orchestrator reads this to know *what* happened;
+   operators read `report.md` for the writeup.
 
 (The non-negotiables — read the log, call `render_report` once, quote verbatim,
 don't invent — are in ALWAYS / NEVER at the top.)
@@ -101,17 +103,30 @@ don't invent — are in ALWAYS / NEVER at the top.)
 
 
 class ReportedFinding(BaseModel):
-    finding: Finding
+    """Lightweight reference to a finding — NOT the full finding.
+
+    The full description/impact/evidence/remediation already live in `report.md`
+    (written by `render_report`). This is only what the orchestrator needs to
+    summarize the engagement, so the analyst's closing structured-response tool
+    call stays small instead of re-emitting every finding verbatim (which made
+    that final turn balloon and stall)."""
+
+    title: str
+    host: str
+    severity: str  # info | low | medium | high | critical
     attack_tactics: list[str] = Field(default_factory=list)  # TA0001, ...
     attack_techniques: list[str] = Field(default_factory=list)  # T1190, ...
 
 
 class EngagementReport(BaseModel):
+    """Orchestrator-facing summary returned at the end. Deliberately lightweight:
+    the human-readable report (walkthrough, full findings) is `report.md`
+    on disk via `render_report` — this return only summarizes it."""
+
     engagement_name: str
     executive_summary: str
-    findings_by_host: dict[str, list[ReportedFinding]] = Field(default_factory=dict)
+    findings: list[ReportedFinding] = Field(default_factory=list)  # references only
     failed_objectives: list[str] = Field(default_factory=list)
-    appendix_episode_summary: str = ""
 
 
 ANALYST_REQUIRED_TOOLS: frozenset[str] = frozenset({
