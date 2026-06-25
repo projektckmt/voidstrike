@@ -57,6 +57,12 @@ export async function readShell(engagementId: string, sessionName: string) {
   return getJson(`/engagements/${engagementId}/shell/${sessionName}/read`);
 }
 
+export async function fetchReport(engagementId: string) {
+  return getJson<{ exists: boolean; markdown: string }>(
+    `/engagements/${engagementId}/report`,
+  );
+}
+
 export async function fetchStuck(engagementId: string) {
   return getJson(`/engagements/${engagementId}/stuck`);
 }

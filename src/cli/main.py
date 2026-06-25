@@ -1312,6 +1312,15 @@ def _render_tool_result(name: str, content: str) -> bool:
         return _render_service_triage_result(content)
     if name.startswith("research__"):
         return _render_research_result(name, content)
+    if name in {"postex__linux_basic_enum", "postex__windows_basic_enum",
+                "postex__loot_credentials"}:
+        return _render_postex_cmd_sweep(name, content)
+    if name == "postex__suid_enum":
+        return _render_postex_suid_result(content)
+    if name == "postex__kernel_suggester":
+        return _render_postex_kernel_result(content)
+    if name == "postex__linpeas":
+        return _render_postex_linpeas_result(content)
     if name == "task":
         return _render_task_result(content)
     return False
@@ -2026,6 +2035,161 @@ def _render_service_triage_result(content: str) -> bool:
             for line in str(evidence).splitlines()[:4]:
                 if line.strip():
                     console.print(f"        [dim]{_esc(_short(line.strip(), n=110))}[/dim]")
+    return True
+
+
+def _short_name(name: str) -> str:
+    """Strip the `server__` prefix for display (postex__suid_enum → suid_enum)."""
+    return name.split("__", 1)[-1]
+
+
+def _render_postex_cmd_sweep(name: str, content: str) -> bool:
+    """Render the enum sweeps that return {results: [{cmd, output}], warning?}.
+
+    Covers linux_basic_enum, windows_basic_enum, loot_credentials. Shows each
+    command with a few lines of its captured output so the operator sees the
+    actual enum signal (id, sudo -l, SUIDs, creds) instead of a bare `ok`.
+    """
+    try:
+        data = json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    short = _short_name(name)
+    if data.get("ok") is False:
+        console.print(f"[dim]  └─[/dim] [red]{_esc(short)}[/red]: {_esc(str(data.get('error', 'failed')))}")
+        return True
+
+    results = data.get("results") or []
+    console.rule(f"[magenta]{_esc(short)}[/magenta] — {len(results)} command(s)", align="left")
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        cmd = str(item.get("cmd", ""))
+        out = str(item.get("output", "")).strip()
+        console.print(f"  [cyan]${_esc(_short(cmd, n=90))}[/cyan]")
+        if not out:
+            console.print("      [dim](no output)[/dim]")
+            continue
+        lines = out.splitlines()
+        for line in lines[:8]:
+            # emoji=False: captured output (passwd/shadow) is full of `:x:`-style
+            # colons that rich would otherwise turn into emoji.
+            console.print(f"      [dim]{_esc(_short(line, n=140))}[/dim]", emoji=False)
+        if len(lines) > 8:
+            console.print(f"      [dim]… {len(lines) - 8} more line(s)[/dim]")
+
+    warning = data.get("warning")
+    if warning:
+        console.print(f"  [yellow]⚠ {_esc(_short(str(warning), n=200))}[/yellow]")
+    return True
+
+
+def _render_postex_suid_result(content: str) -> bool:
+    """Render postex__suid_enum — lead with GTFOBins privesc candidates."""
+    try:
+        data = json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if data.get("ok") is False:
+        console.print(f"[dim]  └─[/dim] [red]suid_enum[/red]: {_esc(str(data.get('error', 'failed')))}")
+        return True
+
+    suids = data.get("suids_found") or []
+    candidates = data.get("privesc_candidates") or []
+    console.rule(
+        f"[magenta]suid_enum[/magenta] — {len(suids)} SUID binary(ies), "
+        f"{len(candidates)} privesc candidate(s)",
+        align="left",
+    )
+    for c in candidates:
+        if not isinstance(c, dict):
+            continue
+        console.print(
+            f"  [yellow bold]{_esc(str(c.get('binary', '?')))}[/yellow bold] "
+            f"[dim]{_esc(str(c.get('path', '')))}[/dim]"
+        )
+        console.print(f"      [white]{_esc(_short(str(c.get('technique', '')), n=160))}[/white]")
+    if not candidates and suids:
+        for path in suids[:20]:
+            console.print(f"  [dim]{_esc(str(path))}[/dim]")
+        if len(suids) > 20:
+            console.print(f"  [dim]… {len(suids) - 20} more[/dim]")
+    if data.get("warning"):
+        console.print(f"  [yellow]⚠ {_esc(_short(str(data['warning']), n=200))}[/yellow]")
+    return True
+
+
+def _render_postex_kernel_result(content: str) -> bool:
+    """Render postex__kernel_suggester — uname banner + candidate kernel CVEs."""
+    try:
+        data = json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if data.get("ok") is False:
+        console.print(f"[dim]  └─[/dim] [red]kernel_suggester[/red]: {_esc(str(data.get('error', 'failed')))}")
+        return True
+
+    suggestions = data.get("suggestions") or []
+    console.rule(
+        f"[magenta]kernel_suggester[/magenta] — {len(suggestions)} suggestion(s)",
+        align="left",
+    )
+    banner = str(data.get("uname", "")).strip()
+    if banner:
+        console.print(f"  [dim]{_esc(_short(banner, n=160))}[/dim]")
+    for s in suggestions:
+        if not isinstance(s, dict):
+            continue
+        console.print(
+            f"  [yellow bold]{_esc(str(s.get('cve', '?')))}[/yellow bold] "
+            f"[white]{_esc(str(s.get('name', '')))}[/white] "
+            f"[dim]({_esc(str(s.get('kernels', '')))})[/dim]"
+        )
+        verify = s.get("verify")
+        if verify:
+            console.print(f"      [cyan]verify:[/cyan] [dim]{_esc(str(verify))}[/dim]")
+    return True
+
+
+def _render_postex_linpeas_result(content: str) -> bool:
+    """Render postex__linpeas — the grepped PE highlight lines.
+
+    linpeas returns {ok, output, warning?} where `output` is the highlighted
+    leads (NOPASSWD, SUID, CVEs, writable paths…). Show those lines instead of
+    collapsing the whole report to a bare `ok`.
+    """
+    try:
+        data = json.loads(content)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if data.get("ok") is False:
+        console.print(f"[dim]  └─[/dim] [red]linpeas[/red]: {_esc(str(data.get('error', 'failed')))}")
+        return True
+
+    out = str(data.get("output", "")).strip()
+    if "LINPEAS_FETCH_FAILED" in out:
+        console.print(
+            "[dim]  └─[/dim] [yellow]linpeas[/yellow]: no source reachable "
+            "[dim](stage on Kali, re-call with url=)[/dim]"
+        )
+        return True
+
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    console.rule(f"[magenta]linpeas[/magenta] — {len(lines)} highlight line(s)", align="left")
+    for ln in lines[:60]:
+        # emoji=False: linpeas leads are full of `:` (paths, version strings)
+        # that rich would otherwise turn into emoji.
+        console.print(f"  [dim]{_esc(_short(ln.strip(), n=160))}[/dim]", emoji=False)
+    if len(lines) > 60:
+        console.print(f"  [dim]… {len(lines) - 60} more — grep /tmp/linpeas.out[/dim]")
     return True
 
 

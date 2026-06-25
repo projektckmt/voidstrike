@@ -421,7 +421,6 @@ async def _ensure_report_exists(engagement_id: str, spec_path: str) -> None:
             targets = []
 
         findings: list[dict[str, Any]] = []
-        timeline: list[dict[str, Any]] = []
         try:
             from psycopg.rows import dict_row  # noqa: PLC0415
             pool = _get_pg_pool()
@@ -439,30 +438,6 @@ async def _ensure_report_exists(engagement_id: str, spec_path: str) -> None:
                         (engagement_id,),
                     )
                     findings = [dict(r) for r in await cur.fetchall()]
-                    # Replay the command log so the stub is still a usable writeup.
-                    await cur.execute(
-                        """
-                        SELECT agent_name, ts, action, tool_input, tool_output,
-                               outcome_tag, error
-                        FROM episodes
-                        WHERE engagement_id = %s
-                        ORDER BY ts ASC
-                        LIMIT 500
-                        """,
-                        (engagement_id,),
-                    )
-                    timeline = [
-                        {
-                            "agent_name": r["agent_name"],
-                            "timestamp": r["ts"].isoformat() if r["ts"] else None,
-                            "action": r["action"],
-                            "tool_input": r["tool_input"],
-                            "tool_output": r["tool_output"],
-                            "outcome_tag": r["outcome_tag"],
-                            "error": r["error"],
-                        }
-                        for r in await cur.fetchall()
-                    ]
         except Exception:  # noqa: BLE001
             log.warning("safety-net report: failed to read findings from Postgres", exc_info=True)
 
@@ -480,7 +455,6 @@ async def _ensure_report_exists(engagement_id: str, spec_path: str) -> None:
                 "Postgres episode/finding log and the on-disk flags file."
             ),
             episode_summary="",
-            timeline=timeline,
         )
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(report.to_markdown())
@@ -519,6 +493,69 @@ def _kickoff_text(spec: Any, engagement_id: str) -> str:
         ]
     lines += ["", "Follow the loop in your system prompt. Start with Surface."]
     return "\n".join(lines)
+
+
+def _extract_interrupt(update: Any) -> Any | None:
+    """Pull a HITL interrupt payload out of a stream update, or None.
+
+    LangGraph surfaces an `interrupt()` as `{"__interrupt__": (Interrupt(...),)}`
+    in the streamed update dict. We return the first interrupt's `.value` — the
+    dict the middleware passed to `interrupt()` (e.g. `{"kind": "stuck_report",
+    ...}`)."""
+    if not isinstance(update, dict):
+        return None
+    intr = update.get("__interrupt__")
+    if not intr:
+        return None
+    first = intr[0] if isinstance(intr, (list, tuple)) else intr
+    return getattr(first, "value", first)
+
+
+async def _await_hitl_reply(engagement_id: str, payload: Any) -> Any:
+    """Enqueue a pending HITL interrupt, block until the operator replies, and
+    return the reply value to resume the graph with.
+
+    Publishes the pending item to `hitl:queue` (the cross-engagement queue the
+    dashboards read) and, for stuck reports, to `engagement:{id}:stuck`, then
+    waits on the per-engagement reply channel that the `approve` /
+    `stuck_response` endpoints publish to. The pending item is removed once
+    answered. Operator pause/cancel propagates out of the `get_message` await and
+    tears the wait down via the normal CancelledError path."""
+    r = _get_redis()
+    kind = payload.get("kind") if isinstance(payload, dict) else None
+    item = json.dumps({
+        "engagement_id": engagement_id,
+        **(payload if isinstance(payload, dict) else {"value": payload}),
+    })
+
+    pubsub = r.pubsub()
+    # Subscribe BEFORE enqueuing so an unusually fast reply can't slip past us
+    # (the same publish-before-subscribe race the SSE backlog guards against).
+    await pubsub.subscribe(f"engagement:{engagement_id}:hitl")
+    await r.rpush("hitl:queue", item)
+    if kind == "stuck_report":
+        await r.rpush(f"engagement:{engagement_id}:stuck", item)
+    await _emit(engagement_id, {"event": "hitl_pending", "kind": kind, "payload": _safe(payload)})
+
+    try:
+        while True:
+            try:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=15.0)
+            except RedisTimeoutError:
+                continue  # idle — a human can take a while; keep waiting
+            if msg is None:
+                continue
+            try:
+                return json.loads(msg["data"])
+            except (json.JSONDecodeError, TypeError, KeyError):
+                continue  # malformed reply — ignore and keep waiting
+    finally:
+        await pubsub.unsubscribe(f"engagement:{engagement_id}:hitl")
+        await pubsub.close()
+        await r.lrem("hitl:queue", 1, item)
+        if kind == "stuck_report":
+            await r.lrem(f"engagement:{engagement_id}:stuck", 1, item)
+        await _emit(engagement_id, {"event": "hitl_resolved", "kind": kind})
 
 
 async def _run_engagement(
@@ -579,8 +616,11 @@ async def _run_engagement(
 
         _max_auto_resumes = 4
         auto_resume = 0
+        from langgraph.types import Command  # noqa: PLC0415
+
         while True:
             try:
+                pending_interrupt: Any = None
                 async with build_agent(spec_path, profile=profile, engagement_id=engagement_id) as agent:
                     log.info("engagement %s: agent built, beginning astream", engagement_id)
                     # `subgraphs=True` makes subagent (= subgraph) events bubble
@@ -602,7 +642,19 @@ async def _run_engagement(
                             "namespace": list(namespace),
                             "data": _safe(update),
                         })
-                break  # astream drained to completion — done
+                        intr = _extract_interrupt(update)
+                        if intr is not None:
+                            pending_interrupt = intr
+                if pending_interrupt is None:
+                    break  # astream drained to completion — done
+                # Paused at a HITL interrupt (action approval / stuck report).
+                # Surface it to the dashboards, block for the operator's reply,
+                # then resume the graph from its Postgres checkpoint with the
+                # decision as the `interrupt()` return value.
+                reply = await _await_hitl_reply(engagement_id, pending_interrupt)
+                agent_input = Command(resume=reply)
+                auto_resume = 0  # a human pause isn't a transient failure
+                continue
             except asyncio.CancelledError:
                 raise  # operator pause/cancel — handled by the outer except
             except Exception as exc:  # noqa: BLE001
@@ -934,6 +986,13 @@ async def list_engagements(running: bool = False) -> dict[str, Any]:
         for path in sorted(ENGAGEMENT_DIR.iterdir()):
             if not path.is_dir():
                 continue
+            # Engagement dirs are gateway-minted UUIDs. Skip anything else (e.g. a
+            # stray `loot/` an agent wrote one level too high) so junk folders
+            # don't surface as phantom nameless engagements.
+            try:
+                uuid.UUID(path.name)
+            except ValueError:
+                continue
             fs_ids.add(path.name)
             spec_file = path / "spec.yaml"
             # Start time: prefer the durable engagements.started_at row; fall back
@@ -1092,6 +1151,23 @@ async def engagement_graph(engagement_id: str) -> dict[str, Any]:
         await driver.close()
 
     return {"hosts": hosts, "services": services, "credentials": creds, "cves": cves}
+
+
+@app.get("/engagements/{engagement_id}/report")
+async def get_report(engagement_id: str) -> dict[str, Any]:
+    """Raw `report.md` markdown for an engagement, or `{exists: false}`.
+
+    Validates the id is a UUID before touching the filesystem — this endpoint
+    reads a path under `ENGAGEMENT_DIR`, so an unvalidated id would be a path
+    traversal vector (unlike the DB/Redis endpoints which key by value)."""
+    try:
+        uuid.UUID(engagement_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid engagement id")
+    report_path = ENGAGEMENT_DIR / engagement_id / "report.md"
+    if not report_path.exists():
+        return {"exists": False, "markdown": ""}
+    return {"exists": True, "markdown": report_path.read_text()}
 
 
 @app.get("/engagements/{engagement_id}/stuck")

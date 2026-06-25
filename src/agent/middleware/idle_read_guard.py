@@ -31,11 +31,11 @@ should act (check sessions, re-fire, hand back) rather than read again.
 
 from __future__ import annotations
 
-import json
 import re
 from collections import deque
 from difflib import SequenceMatcher
 from typing import Any
+from ._util import parse_tool_content as _parse_tool_content
 
 # Strip escape sequences / control bytes so two reads are compared by their
 # visible text. A wedged PTY (line-wrap redraw at the wrong COLUMNS) emits new
@@ -67,24 +67,6 @@ def _is_churn(norm: str, recent: deque[str], *, threshold: float = 0.9) -> bool:
         SequenceMatcher(None, tail, prev[-1500:]).ratio() >= threshold
         for prev in recent
     )
-
-
-def _parse_tool_content(result: Any) -> Any:
-    content = getattr(result, "content", result)
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, dict):
-                parts.append(str(block.get("text", block)))
-            else:
-                parts.append(str(getattr(block, "text", block)))
-        content = "".join(parts)
-    if not isinstance(content, str):
-        return content
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        return None
 
 
 def idle_read_guard(max_idle: int = 6):
