@@ -18,7 +18,6 @@ from typing import Any
 import psycopg
 from neo4j import AsyncGraphDatabase
 
-from . import graphiti_sink
 from .extractors import extract
 
 PG_URL = os.environ.get("POSTGRES_URL", "postgresql://voidstrike:changeme@postgres:5432/voidstrike")
@@ -30,8 +29,6 @@ NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "changeme")
 async def main() -> None:
     driver = AsyncGraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
     await _ensure_schema(driver)
-    # Cross-engagement memory graph (no-op unless GRAPHITI_ENABLED).
-    await graphiti_sink.ensure_indices()
 
     aconn = await psycopg.AsyncConnection.connect(PG_URL, autocommit=True)
     async with aconn.cursor() as cur:
@@ -47,6 +44,25 @@ async def main() -> None:
             except json.JSONDecodeError:
                 continue
             await _process_episode(driver, payload)
+            await _mark_processed(aconn, payload.get("id"))
+
+
+async def _mark_processed(aconn: Any, episode_id: Any) -> None:
+    """Record that an episode has been projected, so a worker restart's backfill
+    skips it instead of re-running the projection over the whole history. Without
+    this the marker table stays empty and every restart reprocesses everything.
+    """
+    if episode_id is None:
+        return
+    try:
+        async with aconn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO episode_etl_marker (episode_id) VALUES (%s) "
+                "ON CONFLICT (episode_id) DO NOTHING",
+                (episode_id,),
+            )
+    except Exception:  # noqa: BLE001 — marker is best-effort; never break the worker
+        pass
 
 
 async def _ensure_schema(driver: Any) -> None:
@@ -78,17 +94,18 @@ async def _backfill(aconn: Any, driver: Any) -> None:
             """
         )
         rows = await cur.fetchall()
-        for row in rows:
-            await _process_episode(driver, {
-                "id": row[0],
-                "engagement_id": row[1],
-                "agent_name": row[2],
-                "action": row[3],
-                "tool_input": row[4],
-                "tool_output": row[5],
-                "outcome_tag": row[6],
-                "ts": row[7],
-            })
+    for row in rows:
+        await _process_episode(driver, {
+            "id": row[0],
+            "engagement_id": row[1],
+            "agent_name": row[2],
+            "action": row[3],
+            "tool_input": row[4],
+            "tool_output": row[5],
+            "outcome_tag": row[6],
+            "ts": row[7],
+        })
+        await _mark_processed(aconn, row[0])
 
 
 async def _process_episode(driver: Any, episode: dict[str, Any]) -> None:
@@ -167,13 +184,6 @@ async def _process_episode(driver: Any, episode: dict[str, Any]) -> None:
                 """,
                 cve=cve, eid=engagement_id,
             )
-
-    # Project into the cross-engagement memory graph. Best-effort and last, so a
-    # Graphiti/LLM failure can never corrupt the per-engagement projection above.
-    await graphiti_sink.ingest_episode(episode, facts)
-
-    # Mark this episode as ETL'd so the backfill query doesn't re-pick it.
-    # (Connection re-use kept simple — phase 4 can batch.)
 
 
 if __name__ == "__main__":

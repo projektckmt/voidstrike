@@ -54,22 +54,6 @@ model_list:
         reasoning:
           enabled: false
 
-  # Embeddings — Graphiti's cross-engagement memory embedder routes here. Uses
-  # the native OpenAI key when present; if OPENAI_API_KEY is unset the bootstrap
-  # remaps it to OpenRouter (which also serves text-embedding-3-large), so the
-  # same `openai/text-embedding-3-large` slug + 3072-dim vectors hold on either
-  # path. Keep one embedding model graph-wide — mixing dims breaks vector search.
-  - model_name: openai/text-embedding-3-large
-    litellm_params:
-      model: text-embedding-3-large
-      api_key: os.environ/OPENAI_API_KEY
-  # Cheaper 1536-dim alternative (~5x less). Switch via GRAPHITI_EMBED_MODEL, but
-  # only on a fresh graph — you can't mix embedding dims within one graph.
-  - model_name: openai/text-embedding-3-small
-    litellm_params:
-      model: text-embedding-3-small
-      api_key: os.environ/OPENAI_API_KEY
-
 router_settings:
   routing_strategy: simple-shuffle
   fallbacks:

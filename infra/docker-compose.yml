@@ -31,25 +31,6 @@ services:
     ports:
       - "127.0.0.1:7474:7474"
 
-  # Dedicated Neo4j for the cross-engagement memory graph (Graphiti). Kept
-  # SEPARATE from the `neo4j` service above on purpose: that one holds the
-  # disposable per-engagement projection (and BloodHound), while this one must
-  # PERSIST across engagements — it's the long-term "what worked before" store.
-  # Opt-in via the `memory` profile; the system runs fine without it (the ETL
-  # sink and the orchestrator's recall tool both no-op when GRAPHITI_ENABLED is
-  # unset).
-  graphiti-neo4j:
-    image: neo4j:5-community
-    environment:
-      NEO4J_AUTH: ${GRAPHITI_NEO4J_USER:-neo4j}/${GRAPHITI_NEO4J_PASSWORD:-changeme}
-      NEO4J_PLUGINS: '["apoc"]'
-    volumes:
-      - graphiti-neo4j-data:/data
-    networks: [management-net]
-    ports:
-      - "127.0.0.1:7475:7474"
-    profiles: ["memory"]
-
   redis:
     image: redis:7-alpine
     networks: [management-net]
@@ -168,17 +149,11 @@ services:
       context: ..
       dockerfile: infra/Dockerfile.python
     command: ["python", "-m", "src.etl.log_to_graph"]
-    # env_file brings GRAPHITI_* and the LiteLLM creds in; the explicit block
-    # below pins the in-network service addresses (wins over .env).
-    env_file: ../.env
     environment:
       POSTGRES_URL: postgresql://${POSTGRES_USER:-voidstrike}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-voidstrike}
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USER: ${NEO4J_USER:-neo4j}
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme}
-      # Cross-engagement memory (Graphiti). The LLM/embedder route via the proxy.
-      GRAPHITI_NEO4J_URI: bolt://graphiti-neo4j:7687
-      LITELLM_PROXY_URL: http://litellm:4000
     depends_on:
       postgres:
         condition: service_healthy
@@ -252,7 +227,6 @@ networks:
 volumes:
   postgres-data:
   neo4j-data:
-  graphiti-neo4j-data:   # cross-engagement memory — persists across engagements
   # NB: `engagements` is no longer a named volume — it's a bind-mount to
   # `../engagements` (i.e. the project's `engagements/` dir) on each service
   # that needs it. That puts engagement artifacts (reports, flags, lab_state)

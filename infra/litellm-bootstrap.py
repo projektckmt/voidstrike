@@ -33,11 +33,6 @@ OPENROUTER_SLUG = {
     "openai/gpt-5.4-nano": "openai/gpt-5.4-nano",
     "google/gemini-3-pro": "google/gemini-3.1-pro-preview",
     "google/gemini-flash": "google/gemini-2.5-flash",
-    # Graphiti memory embedder — OpenRouter serves these embedding models too, so
-    # the fallback works without a native OPENAI_API_KEY. `-large` is the default;
-    # `-small` is the cheaper 1536-dim alternative (GRAPHITI_EMBED_MODEL).
-    "openai/text-embedding-3-large": "openai/text-embedding-3-large",
-    "openai/text-embedding-3-small": "openai/text-embedding-3-small",
 }
 
 SRC = os.environ.get("LITELLM_CONFIG_SRC", "/app/config.yaml")

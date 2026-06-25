@@ -164,37 +164,6 @@ async def read_episode_tail(engagement_id: str, n: int = 30) -> dict[str, Any]:
     return {"ok": True, "count": len(episodes), "episodes": episodes}
 
 
-@tool
-async def recall_prior_experience(query: str, limit: int = 10) -> dict[str, Any]:
-    """Search cross-engagement memory for tradecraft that worked (or failed) before.
-
-    This is LONG-TERM memory built from EVERY past engagement — distinct from
-    `read_episode_tail`, which only sees the current one. Query it in natural
-    language about the target in front of you: a service+version ("Jenkins on
-    8080", "OpenSSH 8.2"), a condition ("SMB signing disabled"), or a technique
-    ("kerberoast", "GitLab RCE"). Returns ranked facts distilled from prior
-    engagements, each with when it was observed so you can judge staleness.
-
-    Use it before delegating to `researcher`/`exploit`: if a past engagement
-    already found what fires against this target, you skip the rediscovery cost.
-    Returns an empty list when nothing matches or memory is disabled — treat that
-    as "no prior experience", not an error.
-    """
-    from src.etl import graphiti_sink  # noqa: PLC0415
-
-    try:
-        limit = max(1, min(int(limit), 50))
-    except (TypeError, ValueError):
-        limit = 10
-    try:
-        facts = await graphiti_sink.recall(query, limit=limit)
-    except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": f"memory unavailable: {exc}", "facts": []}
-    if not facts:
-        return {"ok": True, "facts": [], "note": "no prior experience matched"}
-    return {"ok": True, "count": len(facts), "facts": facts}
-
-
 # Cap on methodology-log steps pulled into the report — a writeup wants the
 # full narrative, but an unbounded run shouldn't produce a multi-MB report.md.
 _TIMELINE_MAX_STEPS = 500
@@ -315,7 +284,6 @@ ORCHESTRATOR_TOOLS = [
     write_objective,
     record_flag,
     read_episode_tail,
-    recall_prior_experience,
 ]
 
 ANALYST_TOOLS = [render_report]
