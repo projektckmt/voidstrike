@@ -58,7 +58,10 @@ def test_list_engagements_includes_status(monkeypatch, tmp_path) -> None:
     from src.gateway import main as gw
 
     monkeypatch.setattr(gw, "ENGAGEMENT_DIR", tmp_path)
-    eng_dir = tmp_path / "finished-one"
+    # Real engagement dirs are gateway-minted UUIDs; list_engagements skips any
+    # non-UUID folder (stray loot/ etc.), so the test fixture must use a UUID.
+    eng_id = "00000000-0000-4000-8000-000000000001"
+    eng_dir = tmp_path / eng_id
     eng_dir.mkdir(parents=True)
     (eng_dir / "report.md").write_text("# done")
     (eng_dir / "spec.yaml").write_text(
@@ -70,7 +73,7 @@ def test_list_engagements_includes_status(monkeypatch, tmp_path) -> None:
 
     data = asyncio.run(_go())
     [entry] = data["engagements"]
-    assert entry["engagement_id"] == "finished-one"
+    assert entry["engagement_id"] == eng_id
     assert entry["status"] == "finished"
     assert entry["name"] == "htb-blue"
     assert entry["profile"] == "eco"

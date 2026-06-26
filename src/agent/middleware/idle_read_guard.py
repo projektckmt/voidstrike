@@ -34,7 +34,7 @@ from __future__ import annotations
 import re
 from collections import deque
 from difflib import SequenceMatcher
-from typing import Any
+
 from ._util import parse_tool_content as _parse_tool_content
 
 # Strip escape sequences / control bytes so two reads are compared by their

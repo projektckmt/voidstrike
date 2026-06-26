@@ -577,6 +577,21 @@ def _walk_record_flags(obj: Any) -> list[str]:
     return found
 
 
+def _root_signal_in_event(safe_update: Any) -> bool:
+    """True if an event payload carries a root/objective-capture signal. Lets an
+    HTB run count as solved even when the spec didn't set `expected_flags`."""
+    blob = json.dumps(safe_update).lower()
+    return "objective_met" in blob or "root flag captured" in blob
+
+
+def _htb_solved(flags: list[str], rooted: bool, expected_flags: int | None) -> bool:
+    """HTB success = a root/objective signal, or at least `expected_flags` distinct
+    flags captured (only when the spec sets a positive count)."""
+    if rooted:
+        return True
+    return expected_flags is not None and expected_flags > 0 and len(flags) >= expected_flags
+
+
 def _rewrite_spec_targets(spec_path: str, targets: list[str]) -> None:
     """Persist `targets` into the saved spec so build_agent + the kickoff use the
     spawned box's IP. Written as JSON (valid YAML), which `from_yaml` reads back."""
@@ -780,10 +795,8 @@ async def _run_engagement(
                             for _f in _walk_record_flags(safe_update):
                                 if _f not in htb_flags:
                                     htb_flags.append(_f)
-                            if not htb_rooted:
-                                _blob = json.dumps(safe_update).lower()
-                                if "objective_met" in _blob or "root flag captured" in _blob:
-                                    htb_rooted = True
+                            if not htb_rooted and _root_signal_in_event(safe_update):
+                                htb_rooted = True
                         intr = _extract_interrupt(update)
                         if intr is not None:
                             pending_interrupt = intr
@@ -865,8 +878,7 @@ async def _run_engagement(
         # Drives the on_success teardown policy and what we report.
         if htb_cfg is not None:
             _ef = EngagementSpec.from_yaml(spec_path).expected_flags
-            _solved = htb_rooted or (_ef is not None and _ef > 0 and len(htb_flags) >= _ef)
-            htb_status = "solved" if _solved else "failed"
+            htb_status = "solved" if _htb_solved(htb_flags, htb_rooted, _ef) else "failed"
 
         await _emit(engagement_id, {"event": "complete"})
         log.info("engagement %s completed normally", engagement_id)
@@ -1325,7 +1337,7 @@ async def get_report(engagement_id: str) -> dict[str, Any]:
     try:
         uuid.UUID(engagement_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="invalid engagement id")
+        raise HTTPException(status_code=400, detail="invalid engagement id") from None
     report_path = ENGAGEMENT_DIR / engagement_id / "report.md"
     if not report_path.exists():
         return {"exists": False, "markdown": ""}

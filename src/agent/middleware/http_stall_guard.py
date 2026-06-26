@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 from urllib.parse import urlsplit
+
 from ._util import parse_tool_content as _parse_tool_content
 
 

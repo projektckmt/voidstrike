@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+
 from ._util import parse_tool_content as _parse_tool_content
 
 

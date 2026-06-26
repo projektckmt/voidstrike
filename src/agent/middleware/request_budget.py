@@ -20,7 +20,7 @@ cross-invocation leak) and, once the cap is hit, blocks further calls with a
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
+
 from ._util import messages_from_state as _messages_from_state
 
 

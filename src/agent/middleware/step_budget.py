@@ -23,7 +23,6 @@ read statelessly from `request.state`, so each `task()` invocation starts fresh.
 
 from __future__ import annotations
 
-from typing import Any
 from ._util import messages_from_state as _messages_from_state
 
 # Tools the subagent may always call, even past the budget — they're how it
