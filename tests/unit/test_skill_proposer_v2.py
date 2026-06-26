@@ -37,6 +37,25 @@ def test_emit_per_subagent_slice(tmp_path: Path) -> None:
     assert any(n.startswith("postex-") for n in names)
 
 
+def test_emit_when_objective_met_precedes_analyst_tail(tmp_path: Path) -> None:
+    # Regression: the proposer runs at end-of-engagement, after the analyst's
+    # reporting episodes. OBJECTIVE_MET (tagged when root was captured) must still
+    # be detected even though it's no longer in the last few episodes.
+    proposer = skill_proposer(out_dir=tmp_path / "proposed", skills_root=tmp_path / "skills")
+    episodes = [
+        {"agent_name": "postex", "action": "postex__suid_enum",
+         "outcome_tag": OutcomeTag.OBJECTIVE_MET, "tool_input": {}},
+        # 5+ analyst episodes after success — would push OBJECTIVE_MET out of [-5:].
+        *[
+            {"agent_name": "analyst", "action": "render_report",
+             "outcome_tag": OutcomeTag.NEW_FINDING, "tool_input": {}}
+            for _ in range(6)
+        ],
+    ]
+    paths = proposer({"thread_id": "z", "current_objective": "root"}, episodes)
+    assert any(Path(p).name.startswith("postex-") for p in paths)
+
+
 def test_known_hash_dedupes(tmp_path: Path) -> None:
     """An existing skill marked with `proposed_from: <hash>` causes the
     matching slice to be skipped — we don't re-propose what's already in the

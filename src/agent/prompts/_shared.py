@@ -5,6 +5,34 @@ Kept brace-free: each mode prompt is `.format(...)`-ed with `target` /
 that call, so a stray `{` here would raise `KeyError` at format time.
 """
 
+# OPPLAN — the orchestrator plans with the `write_opplan` tool (opplan.py), whose
+# schema enforces the phase structure below: each phase MUST carry intent, a
+# cheapest-confirm move, a decision/branch, and a status — the model can't emit a
+# bare string. Mode-agnostic, so it lives here.
+OPPLAN = """
+## OPPLAN — plan in phases with `write_opplan`, not a flat checklist
+
+Record your plan with the `write_opplan` tool, NOT `write_todos` (that's for
+subagents). An OPPLAN is an ordered set of phases; each phase carries:
+
+- **phase** — an ordered stage (e.g. `RECON`, `FOOTHOLD`, `PRIVESC`, `LOOT`).
+  Phases gate each other: you do not start a later phase until the earlier one
+  produced what the later one consumes.
+- **intent** — what this phase is trying to establish (its objective).
+- **confirm_move** — the single lowest-cost action that confirms or kills this
+  phase's key assumption before you commit. (The triage rule below, per phase.)
+- **decision** — the observable that advances the phase, plus the branch if it
+  does not appear: "if the precondition is false, drop to <next-ranked move>." A
+  phase with no stated branch is a guess, not a plan.
+- **status** — `pending` | `active` | `done` | `dead`.
+
+Keep the OPPLAN current: as evidence lands, flip statuses, mark a phase `dead`
+the moment its precondition is disproven (don't leave it pending and torture the
+data), and re-rank the remaining phases. The OPPLAN is the orchestrator's
+artifact; subagents keep their own tactical `write_todos` lead-lists — don't
+push OPPLAN structure down into them.
+"""
+
 # Triage discipline — the general fix for "assume a technique, then torture the
 # data to fit it." A real run committed its whole plan to AS-REP roasting off a
 # DC banner, then guessed usernames into existence when the first attempt showed

@@ -26,7 +26,7 @@ def test_other_orchestrators_call_full_scans_escalations() -> None:
 def test_surface_prompt_disallows_initial_full_scan_todo() -> None:
     from src.agent.subagents.surface import SURFACE_PROMPT
 
-    prompt = SURFACE_PROMPT.lower()
-    assert "do not put \"run full tcp port scan\" in your initial todo list" in prompt
-    assert "add it only after the quick scan" in prompt
+    prompt = " ".join(SURFACE_PROMPT.lower().split())
+    assert "never put a full scan in your initial todo as a default step" in prompt
+    assert "run `surface__nmap_full` only if" in prompt
     assert "assignment explicitly requires exhaustive port coverage" not in prompt

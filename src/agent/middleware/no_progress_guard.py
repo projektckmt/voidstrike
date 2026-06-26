@@ -119,8 +119,23 @@ def _command_signature(command: str) -> tuple[str, ...]:
     return tuple(sorted(verbs))
 
 
-def no_progress_guard(max_sends: int = 8):
+def no_progress_guard(max_sends: int = 8, grind_ceiling: int = 30):
     """Break loops where a subagent spams one kind of command with no finding.
+
+    Two complementary counters, both reset by a confirmed `write_finding`:
+
+    * **Per-session signature streak** (`max_sends`) — catches *hammering one
+      kind* of command (the `type X.xyz`/`type Y/z.txt`/... permission-wall
+      flail): N consecutive same-signature sends to a session.
+    * **Cross-session grind ceiling** (`grind_ceiling`) — catches a grind that
+      *rotates what it does* but still makes no progress. The expensive real
+      failure (e.g. a scheduled-task privesc poked via powershell → schtasks →
+      certipy → IEX → dir → ... for 100+ commands) changes its verb signature
+      almost every send, so the streak counter resets to 1 each time and never
+      trips. This counts *every* meaningful command across all sessions since the
+      last finding; past the ceiling it nudges the model to hand back rather than
+      keep churning. Iterative verbs (cred spray / cracking / probing) are
+      exempt from BOTH counters so a legitimate long spray isn't cut off.
 
     Deterministic — the prompt can tell the model to step back and enumerate,
     but this stops the flail regardless. Attach one instance per subagent loop
@@ -131,15 +146,19 @@ def no_progress_guard(max_sends: int = 8):
 
     # session -> (signature, consecutive count)
     streaks: dict[str, tuple[tuple[str, ...], int]] = {}
+    # meaningful commands sent (any session) since the last confirmed finding.
+    grind = {"count": 0, "nudged_at": 0}
 
     class NoProgressGuard(AgentMiddleware):
         async def awrap_tool_call(self, request, handler):  # noqa: ANN001
             tool = getattr(request, "tool", None)
             tool_name = getattr(tool, "name", "") or ""
 
-            # A confirmed finding means real progress — clear the flail window.
+            # A confirmed finding means real progress — clear both windows.
             if tool_name == "episodes__write_finding":
                 streaks.clear()
+                grind["count"] = 0
+                grind["nudged_at"] = 0
                 return await handler(request)
 
             # tmux_exec is the fused send+read (the preferred command path); it
@@ -186,6 +205,26 @@ def no_progress_guard(max_sends: int = 8):
                         "failing, return a structured partial-success result with the "
                         "evidence and blocker. Otherwise change technique materially "
                         "before sending another command."
+                    ),
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                    status="error",
+                )
+
+            # Cross-session grind ceiling: many *different* commands, no finding.
+            grind["count"] += 1
+            if grind["count"] - grind["nudged_at"] > grind_ceiling:
+                grind["nudged_at"] = grind["count"]
+                return ToolMessage(
+                    content=(
+                        f"NO_PROGRESS_BLOCKED: {grind['count']} shell commands have run "
+                        "with no confirmed finding recorded. Rotating *which* command you "
+                        "run is not progress if none of it lands. Re-read what you already "
+                        "know: if you have CONFIRMED the exploitation/privesc vector but "
+                        "can't fire it, STOP and return your structured result now — a "
+                        "partial-success (RCE/vector confirmed + blocker) or a "
+                        "`research_needed` entry naming the exact vector. Only keep going "
+                        "if you have a genuinely new, untried hypothesis."
                     ),
                     tool_call_id=tool_call_id,
                     name=tool_name,

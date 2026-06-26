@@ -96,7 +96,7 @@ def test_logs_offensive_call_with_verbatim_command_and_output(monkeypatch):
     assert action == "shell__tmux_exec"
     assert tool_input == {"session_name": "lsn", "command": "cat /etc/passwd"}
     assert "done" in output
-    assert outcome == "no_result"
+    assert outcome == "ok"  # ran fine, output present — not "no_result"
     assert error is None
 
 

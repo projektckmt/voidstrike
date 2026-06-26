@@ -28,6 +28,75 @@ PG_URL = os.environ.get(
 )
 
 _pool: AsyncConnectionPool | None = None
+_schema_ready = False
+
+# Idempotent DDL for the tables this server owns. `infra/postgres-init.sql` runs
+# only on a *fresh* Postgres volume's first boot — a pre-existing volume created
+# before the episodes/findings tables were added never gets them, and every
+# write then fails with `relation "episodes" does not exist`. Running this once
+# per process makes the server self-healing regardless of how the DB was
+# provisioned. All statements are `IF NOT EXISTS` / `OR REPLACE`, so it's a no-op
+# when the schema is already present.
+_SCHEMA_DDL = """
+CREATE TABLE IF NOT EXISTS episodes (
+    id              BIGSERIAL PRIMARY KEY,
+    engagement_id   TEXT NOT NULL,
+    agent_name      TEXT NOT NULL,
+    ts              TIMESTAMPTZ NOT NULL,
+    action          TEXT NOT NULL,
+    tool_input      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    tool_output     TEXT NOT NULL DEFAULT '',
+    outcome_tag     TEXT NOT NULL DEFAULT 'no_result',
+    cost_usd        NUMERIC(12, 6) NOT NULL DEFAULT 0.0,
+    duration_ms     INTEGER NOT NULL DEFAULT 0,
+    error           TEXT
+);
+CREATE INDEX IF NOT EXISTS episodes_engagement_ts ON episodes (engagement_id, ts);
+CREATE INDEX IF NOT EXISTS episodes_outcome ON episodes (engagement_id, outcome_tag);
+CREATE INDEX IF NOT EXISTS episodes_agent ON episodes (engagement_id, agent_name);
+CREATE TABLE IF NOT EXISTS episode_etl_marker (
+    episode_id      BIGINT PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+    processed_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS findings (
+    id              BIGSERIAL PRIMARY KEY,
+    engagement_id   TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    severity        TEXT NOT NULL,
+    host            TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    impact          TEXT NOT NULL DEFAULT '',
+    evidence        TEXT NOT NULL DEFAULT '',
+    cve             TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    attack_pattern  TEXT,
+    remediation     TEXT NOT NULL DEFAULT '',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS findings_engagement ON findings (engagement_id);
+CREATE INDEX IF NOT EXISTS findings_host ON findings (engagement_id, host);
+CREATE OR REPLACE FUNCTION episodes_notify() RETURNS trigger AS $$
+BEGIN
+    PERFORM pg_notify(
+        'episodes_inserted',
+        json_build_object(
+            'id', NEW.id,
+            'engagement_id', NEW.engagement_id,
+            'agent_name', NEW.agent_name,
+            'action', NEW.action,
+            'tool_input', NEW.tool_input,
+            'tool_output', NEW.tool_output,
+            'outcome_tag', NEW.outcome_tag,
+            'ts', NEW.ts
+        )::text
+    );
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS episodes_notify_trigger ON episodes;
+CREATE TRIGGER episodes_notify_trigger
+AFTER INSERT ON episodes
+FOR EACH ROW EXECUTE FUNCTION episodes_notify();
+"""
 
 
 def _get_pool() -> AsyncConnectionPool:
@@ -35,6 +104,19 @@ def _get_pool() -> AsyncConnectionPool:
     if _pool is None:
         _pool = AsyncConnectionPool(PG_URL, open=False, min_size=1, max_size=8)
     return _pool
+
+
+async def _ready_pool() -> AsyncConnectionPool:
+    """Open the pool and ensure the schema exists (once per process)."""
+    global _schema_ready
+    pool = _get_pool()
+    await pool.open()
+    if not _schema_ready:
+        async with pool.connection() as conn:
+            await conn.execute(_SCHEMA_DDL)
+            await conn.commit()
+        _schema_ready = True
+    return pool
 
 
 @app.tool()
@@ -50,8 +132,7 @@ async def write_episode(
     error: str | None = None,
 ) -> dict[str, Any]:
     """Append a single episode. Returns the assigned id."""
-    pool = _get_pool()
-    await pool.open()
+    pool = await _ready_pool()
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
@@ -88,8 +169,7 @@ async def read_episode_tail(
     outcome_tag: str | None = None,
 ) -> dict[str, Any]:
     """Read the most recent N episodes, newest first. Optional filters."""
-    pool = _get_pool()
-    await pool.open()
+    pool = await _ready_pool()
     where = ["engagement_id = %s"]
     params: list[Any] = [engagement_id]
     if agent_name:
@@ -118,8 +198,7 @@ async def read_episode_tail(
 @app.tool()
 async def read_engagement(engagement_id: str) -> dict[str, Any]:
     """Read all episodes for an engagement. Bounded by `EPISODES_MAX_READ`."""
-    pool = _get_pool()
-    await pool.open()
+    pool = await _ready_pool()
     limit = int(os.environ.get("EPISODES_MAX_READ", "10000"))
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
@@ -152,8 +231,7 @@ async def write_finding(
     remediation: str = "",
 ) -> dict[str, Any]:
     """Persist a Finding row for the Analyst to read at end-of-engagement."""
-    pool = _get_pool()
-    await pool.open()
+    pool = await _ready_pool()
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
@@ -176,8 +254,7 @@ async def write_finding(
 @app.tool()
 async def list_findings(engagement_id: str) -> dict[str, Any]:
     """All findings for an engagement, newest first. Analyst's input."""
-    pool = _get_pool()
-    await pool.open()
+    pool = await _ready_pool()
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
@@ -197,8 +274,7 @@ async def list_findings(engagement_id: str) -> dict[str, Any]:
 @app.tool()
 async def summarize_engagement(engagement_id: str) -> dict[str, Any]:
     """Quick aggregate over an engagement — counts by outcome, cost, agents."""
-    pool = _get_pool()
-    await pool.open()
+    pool = await _ready_pool()
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(

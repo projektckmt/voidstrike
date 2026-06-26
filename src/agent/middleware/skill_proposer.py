@@ -155,9 +155,11 @@ def skill_proposer(out_dir: Path | str = PROPOSED_DIR, skills_root: Path | str =
     root = Path(skills_root)
 
     def _propose(state: dict[str, Any], episodes: list[dict[str, Any]]) -> list[str]:
-        # Only emit when the engagement actually succeeded.
-        terminal_outcomes = {e.get("outcome_tag") for e in episodes[-5:]}
-        if OutcomeTag.OBJECTIVE_MET not in terminal_outcomes:
+        # Only emit when the engagement actually succeeded. Scan ALL episodes,
+        # not just the tail: by the time this runs the last episodes are the
+        # analyst writing the report, so OBJECTIVE_MET (tagged when the flag/root
+        # was captured) has long scrolled past any `[-5:]` window.
+        if OutcomeTag.OBJECTIVE_MET not in {e.get("outcome_tag") for e in episodes}:
             return []
 
         known_hashes = _load_known_hashes(root)

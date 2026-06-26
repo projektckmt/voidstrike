@@ -17,6 +17,7 @@ from .http_stall_guard import http_stall_guard
 from .idle_read_guard import idle_read_guard
 from .model_retry import model_retry
 from .no_progress_guard import no_progress_guard
+from .opplan import opplan_middleware
 from .repeat_guard import repeat_guard
 from .request_budget import browse_budget, curl_budget, request_budget, research_budget
 from .require_episode_log import require_episode_log
@@ -47,6 +48,7 @@ __all__ = [
     "idle_read_guard",
     "model_retry",
     "no_progress_guard",
+    "opplan_middleware",
     "repeat_guard",
     "request_budget",
     "research_budget",

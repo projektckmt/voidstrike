@@ -18,6 +18,11 @@ middleware just disabled prompt caching for no gain. Prompt caching is
 high-leverage: with a stable system prompt + tools, second and subsequent
 calls within ~5 minutes cost ~10% of the input price (huge on Opus runs).
 
+NB this middleware only fires on the *direct* path (ChatAnthropic instance —
+`VOIDSTRIKE_USE_LITELLM=false`). On the default proxy path the model is a
+ChatOpenAI, so it no-ops and LiteLLM injects the cache breakpoints instead
+(see models._litellm_enabled). Caching works either way.
+
 Per the LangChain docs (https://docs.langchain.com/oss/python/deepagents/harness):
 
     >>> from deepagents import HarnessProfile, register_harness_profile
@@ -32,6 +37,12 @@ Per the LangChain docs (https://docs.langchain.com/oss/python/deepagents/harness
 
 `excluded_tools` hides the heavy filesystem tools from the model surface
 (the FilesystemMiddleware stays in place for skill loading etc.).
+
+This module also disables deepagents' auto-added `general-purpose` subagent on
+every model (via `GeneralPurposeSubagentProfile(enabled=False)`): it has only
+the vfs + episode tools, so it cannot run target tooling and just flails when
+the orchestrator delegates real work to it. Our own role subagents still expose
+`task`.
 
 This module is import-side-effecting: `register()` is called once per process
 when `build_agent` first runs. Re-registration is idempotent.
@@ -67,6 +78,7 @@ def register() -> None:
 
     try:
         from deepagents import (  # type: ignore[import-untyped]
+            GeneralPurposeSubagentProfile,
             HarnessProfile,
             register_harness_profile,
         )
@@ -80,24 +92,44 @@ def register() -> None:
     # We leave the middleware in place because prompt caching cuts cached input
     # cost by ~90% — material on Opus runs.
 
-    profile_kwargs: dict = {"excluded_tools": _EXCLUDED_FS_TOOLS}
+    # Disable deepagents' auto-added `general-purpose` subagent on EVERY model.
+    # It only has the filesystem + episode/lab-tracking tools — no shell exec —
+    # so when the orchestrator delegates a real recon/ACL task to it (which it
+    # does), it can't run any target tooling and just flails reading the vfs.
+    # Our own role subagents (surface/exploit/postex/...) still expose `task`;
+    # this removes only the useless general-purpose option.
+    no_general_purpose = GeneralPurposeSubagentProfile(enabled=False)
 
-    # Register under both the provider key and every specific model we ship
-    # in models.py. Provider-level should be enough, but per-model keys are
-    # belt-and-suspenders against version drift in deepagents' lookup.
-    keys = [
+    # Anthropic models: keep `excluded_tools` (Anthropic grammar limit + token
+    # savings) AND disable general-purpose.
+    anthropic_profile = HarnessProfile(
+        excluded_tools=_EXCLUDED_FS_TOOLS,
+        general_purpose_subagent=no_general_purpose,
+    )
+    anthropic_keys = [
         "anthropic",
         "anthropic:claude-opus-4-8",
         "anthropic:claude-sonnet-4-6",
         "anthropic:claude-haiku-4-5",
     ]
-    for key in keys:
-        register_harness_profile(key, HarnessProfile(**profile_kwargs))
+    for key in anthropic_keys:
+        register_harness_profile(key, anthropic_profile)
+
+    # Non-anthropic models (gpt-5.5, qwen, ...) resolve to `ChatOpenAI`
+    # instances that report `ls_provider="openai"`, so the provider-only
+    # fallback in deepagents' `_harness_profile_for_model` picks this up. We
+    # only disable general-purpose here — no `excluded_tools`, to leave those
+    # models' tool surface exactly as it was.
+    register_harness_profile(
+        "openai",
+        HarnessProfile(general_purpose_subagent=no_general_purpose),
+    )
 
     log.info(
-        "registered anthropic harness profile under %d keys (excluded_tools=%d, "
-        "prompt-caching kept enabled)",
-        len(keys),
+        "registered harness profiles: anthropic (%d keys, excluded_tools=%d) + "
+        "openai provider; general-purpose subagent disabled on all; "
+        "prompt-caching kept enabled",
+        len(anthropic_keys),
         len(_EXCLUDED_FS_TOOLS),
     )
     _REGISTERED = True

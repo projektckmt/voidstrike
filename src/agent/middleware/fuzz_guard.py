@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
+from ._util import parse_tool_content as _parse_tool_content
 
 
 @dataclass
@@ -41,24 +41,6 @@ def _ffuf_scope(url: str) -> str:
     before_fuzz = parsed.path.split("FUZZ", 1)[0]
     directory = before_fuzz.rsplit("/", 1)[0] if before_fuzz else ""
     return f"{parsed.scheme}://{parsed.netloc}{directory}/"
-
-
-def _parse_tool_content(result: Any) -> Any:
-    content = getattr(result, "content", result)
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, dict):
-                parts.append(str(block.get("text", block)))
-            else:
-                parts.append(str(getattr(block, "text", block)))
-        content = "".join(parts)
-    if not isinstance(content, str):
-        return content
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        return None
 
 
 def fuzz_guard(max_attempts: int = 4, max_empty: int = 3, max_missing_wordlists: int = 1):

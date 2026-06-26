@@ -111,7 +111,7 @@ class EngagementSpec(BaseModel):
     # unset for multi-host labs where flag count isn't the completion signal.
     expected_flags: int | None = None
     budget_usd: float = 10.0
-    profile: str = "eco"  # eco | max | test
+    profile: str = "eco"  # eco | max | test | qwen | gpt
     vpn_config: str | None = None  # path to .ovpn
     roe: RulesOfEngagement = Field(default_factory=RulesOfEngagement)
     # Operator briefing delivered to the agent at kickoff (the gateway folds it

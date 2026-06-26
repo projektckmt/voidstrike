@@ -81,6 +81,42 @@ def _get_pg_pool():
     return _pg_pool
 
 
+# `infra/postgres-init.sql` creates the engagements table, but only on a *fresh*
+# volume's first boot — a pre-existing DB never gets it. Ensure it here too
+# (idempotent), mirroring the self-heal in the episodes MCP server. Columns match
+# postgres-init.sql exactly.
+_ENGAGEMENTS_DDL = """
+CREATE TABLE IF NOT EXISTS engagements (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name            TEXT NOT NULL,
+    mode            TEXT NOT NULL CHECK (mode IN ('ctf','lab','engagement')),
+    profile         TEXT NOT NULL DEFAULT 'eco',
+    spec_yaml       TEXT NOT NULL,
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    ended_at        TIMESTAMPTZ,
+    status          TEXT NOT NULL DEFAULT 'running',
+    budget_usd      NUMERIC(10, 4) NOT NULL DEFAULT 10.0,
+    cost_usd        NUMERIC(10, 4) NOT NULL DEFAULT 0.0,
+    notes           TEXT NOT NULL DEFAULT ''
+);
+"""
+
+_engagements_schema_ready = False
+
+
+async def _ready_engagements_pool():
+    """Open the pool and ensure the engagements table exists (once per process)."""
+    global _engagements_schema_ready
+    pool = _get_pg_pool()
+    await pool.open()
+    if not _engagements_schema_ready:
+        async with pool.connection() as conn:
+            await conn.execute(_ENGAGEMENTS_DDL)
+            await conn.commit()
+        _engagements_schema_ready = True
+    return pool
+
+
 class StartEngagementResponse(BaseModel):
     engagement_id: str
     thread_id: str
@@ -120,6 +156,32 @@ async def start_engagement(
     # Persist the profile so `/resume` can rebuild the agent with the same
     # model tier configuration without requiring the operator to re-specify.
     (out_dir / "profile").write_text(profile)
+
+    # Persist a durable engagements row so `started_at` survives independently of
+    # filesystem mtimes. Best-effort: a DB hiccup must not stop the run starting —
+    # list_engagements falls back to the spec file's mtime when the row is absent.
+    try:
+        parsed_spec = EngagementSpec.from_yaml(spec_path)
+        pool = await _ready_engagements_pool()
+        async with pool.connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO engagements (id, name, mode, profile, spec_yaml, budget_usd)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                (
+                    engagement_id,
+                    parsed_spec.name,
+                    parsed_spec.mode.value,
+                    profile,
+                    spec_path.read_text(),
+                    parsed_spec.budget_usd,
+                ),
+            )
+            await conn.commit()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("engagement %s: failed to persist engagements row: %s", engagement_id, exc)
 
     task = asyncio.create_task(
         _run_engagement(str(spec_path), engagement_id, profile),
@@ -359,7 +421,6 @@ async def _ensure_report_exists(engagement_id: str, spec_path: str) -> None:
             targets = []
 
         findings: list[dict[str, Any]] = []
-        timeline: list[dict[str, Any]] = []
         try:
             from psycopg.rows import dict_row  # noqa: PLC0415
             pool = _get_pg_pool()
@@ -377,30 +438,6 @@ async def _ensure_report_exists(engagement_id: str, spec_path: str) -> None:
                         (engagement_id,),
                     )
                     findings = [dict(r) for r in await cur.fetchall()]
-                    # Replay the command log so the stub is still a usable writeup.
-                    await cur.execute(
-                        """
-                        SELECT agent_name, ts, action, tool_input, tool_output,
-                               outcome_tag, error
-                        FROM episodes
-                        WHERE engagement_id = %s
-                        ORDER BY ts ASC
-                        LIMIT 500
-                        """,
-                        (engagement_id,),
-                    )
-                    timeline = [
-                        {
-                            "agent_name": r["agent_name"],
-                            "timestamp": r["ts"].isoformat() if r["ts"] else None,
-                            "action": r["action"],
-                            "tool_input": r["tool_input"],
-                            "tool_output": r["tool_output"],
-                            "outcome_tag": r["outcome_tag"],
-                            "error": r["error"],
-                        }
-                        for r in await cur.fetchall()
-                    ]
         except Exception:  # noqa: BLE001
             log.warning("safety-net report: failed to read findings from Postgres", exc_info=True)
 
@@ -418,7 +455,6 @@ async def _ensure_report_exists(engagement_id: str, spec_path: str) -> None:
                 "Postgres episode/finding log and the on-disk flags file."
             ),
             episode_summary="",
-            timeline=timeline,
         )
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(report.to_markdown())
@@ -459,6 +495,179 @@ def _kickoff_text(spec: Any, engagement_id: str) -> str:
     return "\n".join(lines)
 
 
+def _extract_interrupt(update: Any) -> Any | None:
+    """Pull a HITL interrupt payload out of a stream update, or None.
+
+    LangGraph surfaces an `interrupt()` as `{"__interrupt__": (Interrupt(...),)}`
+    in the streamed update dict. We return the first interrupt's `.value` — the
+    dict the middleware passed to `interrupt()` (e.g. `{"kind": "stuck_report",
+    ...}`)."""
+    if not isinstance(update, dict):
+        return None
+    intr = update.get("__interrupt__")
+    if not intr:
+        return None
+    first = intr[0] if isinstance(intr, (list, tuple)) else intr
+    return getattr(first, "value", first)
+
+
+async def _await_hitl_reply(engagement_id: str, payload: Any) -> Any:
+    """Enqueue a pending HITL interrupt, block until the operator replies, and
+    return the reply value to resume the graph with.
+
+    Publishes the pending item to `hitl:queue` (the cross-engagement queue the
+    dashboards read) and, for stuck reports, to `engagement:{id}:stuck`, then
+    waits on the per-engagement reply channel that the `approve` /
+    `stuck_response` endpoints publish to. The pending item is removed once
+    answered. Operator pause/cancel propagates out of the `get_message` await and
+    tears the wait down via the normal CancelledError path."""
+    r = _get_redis()
+    kind = payload.get("kind") if isinstance(payload, dict) else None
+    item = json.dumps({
+        "engagement_id": engagement_id,
+        **(payload if isinstance(payload, dict) else {"value": payload}),
+    })
+
+    pubsub = r.pubsub()
+    # Subscribe BEFORE enqueuing so an unusually fast reply can't slip past us
+    # (the same publish-before-subscribe race the SSE backlog guards against).
+    await pubsub.subscribe(f"engagement:{engagement_id}:hitl")
+    await r.rpush("hitl:queue", item)
+    if kind == "stuck_report":
+        await r.rpush(f"engagement:{engagement_id}:stuck", item)
+    await _emit(engagement_id, {"event": "hitl_pending", "kind": kind, "payload": _safe(payload)})
+
+    try:
+        while True:
+            try:
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=15.0)
+            except RedisTimeoutError:
+                continue  # idle — a human can take a while; keep waiting
+            if msg is None:
+                continue
+            try:
+                return json.loads(msg["data"])
+            except (json.JSONDecodeError, TypeError, KeyError):
+                continue  # malformed reply — ignore and keep waiting
+    finally:
+        await pubsub.unsubscribe(f"engagement:{engagement_id}:hitl")
+        await pubsub.close()
+        await r.lrem("hitl:queue", 1, item)
+        if kind == "stuck_report":
+            await r.lrem(f"engagement:{engagement_id}:stuck", 1, item)
+        await _emit(engagement_id, {"event": "hitl_resolved", "kind": kind})
+
+
+def _walk_record_flags(obj: Any) -> list[str]:
+    """Recursively pull flag strings from `record_flag` tool calls anywhere in a
+    (JSON-safe) event payload — the orchestrator records each captured flag via
+    that tool. Mirrors the CLI's extractor so HTB flag-submit works server-side."""
+    found: list[str] = []
+    if isinstance(obj, dict):
+        if obj.get("name") == "record_flag":
+            args = obj.get("args") or obj.get("input") or {}
+            flag = args.get("flag") if isinstance(args, dict) else None
+            if isinstance(flag, str) and flag.strip():
+                found.append(flag.strip())
+        for v in obj.values():
+            found.extend(_walk_record_flags(v))
+    elif isinstance(obj, list):
+        for v in obj:
+            found.extend(_walk_record_flags(v))
+    return found
+
+
+def _rewrite_spec_targets(spec_path: str, targets: list[str]) -> None:
+    """Persist `targets` into the saved spec so build_agent + the kickoff use the
+    spawned box's IP. Written as JSON (valid YAML), which `from_yaml` reads back."""
+    from ..schemas.engagement import EngagementSpec  # noqa: PLC0415
+    spec = EngagementSpec.from_yaml(spec_path)
+    spec.targets = targets
+    Path(spec_path).write_text(spec.model_dump_json(indent=2))
+
+
+async def _htb_spawn(cfg: Any, engagement_id: str):
+    """Resolve + spawn (or reuse) the spec's HTB machine and return its live IP.
+
+    Returns `(client, machine, ip)`. The caller owns `client` and must
+    `aclose()` it (see `_htb_finalize`). Raises `HtbError` on failure (after
+    closing the client). A *different* already-spawned box is terminated first —
+    HTB allows one active machine, so a leftover would just block the run."""
+    from ..integrations.htb import HtbClient, HtbError  # noqa: PLC0415
+
+    token = os.environ.get("HTB_TOKEN", "").strip()
+    if not token:
+        raise HtbError(
+            "spec has an `htb:` block but HTB_TOKEN is not set in the gateway "
+            "environment — add it to .env so the gateway can provision the box"
+        )
+
+    async def ev(stage: str, msg: str) -> None:
+        await _emit(engagement_id, {"event": "htb", "stage": stage, "message": msg})
+
+    client = HtbClient(token=token)
+    try:
+        machine = await client.resolve_machine(cfg.machine)
+        await ev("resolve", f"id={machine.id} kind={machine.kind}")
+        active = await client.active_machine()
+        if active and active.id != machine.id:
+            await ev("preflight", f"terminating other active machine {active.name!r}")
+            await client.terminate(active)
+        if active and active.id == machine.id:
+            machine.ip = active.ip
+            if cfg.reset_before:
+                await ev("reset", "resetting already-spawned target to clean state")
+                await client.reset(machine)
+            await ev("spawn", "target already spawned; reusing")
+        else:
+            await ev("spawn", "requesting spawn")
+            await client.spawn(machine)
+        ip = machine.ip or await client.wait_for_ip(machine, timeout_s=cfg.spawn_timeout_s)
+        machine.ip = ip
+        await ev("ready", f"target IP {ip}")
+        return client, machine, ip
+    except Exception:
+        await client.aclose()
+        raise
+
+
+async def _htb_finalize(
+    client: Any, machine: Any, cfg: Any, *, status: str, flags: list[str], engagement_id: str
+) -> None:
+    """Submit captured flags (best-effort) and tear the box down per policy, then
+    close the client. Never raises — teardown failure must not mask the run.
+
+    Safe to call from `_run_engagement`'s finally: by then any operator-cancel
+    CancelledError has been caught (not re-raised), so these awaits run."""
+    from ..agent.challenge import _should_teardown  # noqa: PLC0415
+    from ..integrations.htb import HtbError  # noqa: PLC0415
+
+    async def ev(stage: str, msg: str) -> None:
+        await _emit(engagement_id, {"event": "htb", "stage": stage, "message": msg})
+
+    try:
+        submitted: list[str] = []
+        if cfg.submit_flags and flags:
+            for flag in flags:
+                try:
+                    await client.submit_flag(machine, flag, difficulty=cfg.difficulty)
+                    submitted.append(flag)
+                except HtbError as exc:
+                    await ev("flag", f"submit failed ({flag[:8]}…): {exc}")
+            if submitted:
+                await ev("flag", f"{len(submitted)} flag(s) submitted to HTB")
+        if _should_teardown(cfg.teardown, status):
+            try:
+                await client.terminate(machine)
+                await ev("teardown", "machine terminated")
+            except HtbError as exc:
+                await ev("teardown", f"failed (leaving machine up): {exc}")
+        else:
+            await ev("teardown", f"skipped (policy={cfg.teardown}, status={status})")
+    finally:
+        await client.aclose()
+
+
 async def _run_engagement(
     spec_path: str,
     engagement_id: str,
@@ -481,6 +690,15 @@ async def _run_engagement(
     else:
         await _emit(engagement_id, {"event": "resumed", "engagement_id": engagement_id})
 
+    # HTB provisioning state (set during spawn below; drives flag-submit + teardown
+    # in the finally). Stays None for static targets and on resume.
+    htb_cfg = None
+    htb_client = None
+    htb_machine = None
+    htb_flags: list[str] = []
+    htb_rooted = False
+    htb_status = "error"
+
     try:
         if not resume:
             # Clear stale tmux sessions (listeners, landed shells, msfconsole
@@ -496,6 +714,18 @@ async def _run_engagement(
 
         from ..agent.main import build_agent
         from ..schemas.engagement import EngagementSpec
+
+        # HTB auto-provisioning (spec-driven): if the spec carries an `htb:` block,
+        # spawn the named box and write its IP into `targets:` BEFORE the agent
+        # builds. This makes provisioning work for ANY client (CLI, web) — the
+        # spec alone decides. On resume the box is already up and the spec already
+        # holds its IP, so we skip spawning (and skip auto-teardown/submit).
+        if not resume:
+            _prov_spec = EngagementSpec.from_yaml(spec_path)
+            if _prov_spec.htb is not None:
+                htb_cfg = _prov_spec.htb
+                htb_client, htb_machine, _ip = await _htb_spawn(htb_cfg, engagement_id)
+                _rewrite_spec_targets(spec_path, [_ip])
 
         # The system prompt has the engagement context (target, objective, mode);
         # we kick off the loop with a brief operator-style HumanMessage. Without
@@ -517,8 +747,11 @@ async def _run_engagement(
 
         _max_auto_resumes = 4
         auto_resume = 0
+        from langgraph.types import Command  # noqa: PLC0415
+
         while True:
             try:
+                pending_interrupt: Any = None
                 async with build_agent(spec_path, profile=profile, engagement_id=engagement_id) as agent:
                     log.info("engagement %s: agent built, beginning astream", engagement_id)
                     # `subgraphs=True` makes subagent (= subgraph) events bubble
@@ -535,12 +768,35 @@ async def _run_engagement(
                         subgraphs=True,
                     ):
                         namespace, update = _unpack_stream_event(raw)
+                        safe_update = _safe(update)
                         await _emit(engagement_id, {
                             "event": "step",
                             "namespace": list(namespace),
-                            "data": _safe(update),
+                            "data": safe_update,
                         })
-                break  # astream drained to completion — done
+                        # HTB runs: harvest captured flags + a rooted signal from
+                        # the event stream so we can submit them after the run.
+                        if htb_cfg is not None:
+                            for _f in _walk_record_flags(safe_update):
+                                if _f not in htb_flags:
+                                    htb_flags.append(_f)
+                            if not htb_rooted:
+                                _blob = json.dumps(safe_update).lower()
+                                if "objective_met" in _blob or "root flag captured" in _blob:
+                                    htb_rooted = True
+                        intr = _extract_interrupt(update)
+                        if intr is not None:
+                            pending_interrupt = intr
+                if pending_interrupt is None:
+                    break  # astream drained to completion — done
+                # Paused at a HITL interrupt (action approval / stuck report).
+                # Surface it to the dashboards, block for the operator's reply,
+                # then resume the graph from its Postgres checkpoint with the
+                # decision as the `interrupt()` return value.
+                reply = await _await_hitl_reply(engagement_id, pending_interrupt)
+                agent_input = Command(resume=reply)
+                auto_resume = 0  # a human pause isn't a transient failure
+                continue
             except asyncio.CancelledError:
                 raise  # operator pause/cancel — handled by the outer except
             except Exception as exc:  # noqa: BLE001
@@ -605,6 +861,13 @@ async def _run_engagement(
         # using whatever durable state we have.
         await _ensure_report_exists(engagement_id, spec_path)
 
+        # HTB success = a root/objective signal, or enough flags for the spec.
+        # Drives the on_success teardown policy and what we report.
+        if htb_cfg is not None:
+            _ef = EngagementSpec.from_yaml(spec_path).expected_flags
+            _solved = htb_rooted or (_ef is not None and _ef > 0 and len(htb_flags) >= _ef)
+            htb_status = "solved" if _solved else "failed"
+
         await _emit(engagement_id, {"event": "complete"})
         log.info("engagement %s completed normally", engagement_id)
     except asyncio.CancelledError:
@@ -631,6 +894,19 @@ async def _run_engagement(
             "traceback": tb,
         })
     finally:
+        # HTB teardown + flag-submit (best-effort, never raises). Runs on every
+        # exit path — success, failure, error, or operator cancel — so a box we
+        # spawned is never stranded. Safe here: any cancel was already caught
+        # above (not re-raised), so these awaits complete. On cancel htb_status
+        # is still "error", so the default on_complete policy still tears down.
+        if htb_client is not None and htb_machine is not None and htb_cfg is not None:
+            try:
+                await _htb_finalize(
+                    htb_client, htb_machine, htb_cfg,
+                    status=htb_status, flags=htb_flags, engagement_id=engagement_id,
+                )
+            except Exception:  # noqa: BLE001
+                log.exception("engagement %s: HTB finalize failed (non-fatal)", engagement_id)
         await _emit(engagement_id, {"event": "end"})
         # Remove our task tracking entry so a future engagement with the
         # same ID (rare, but possible on resume) doesn't see a stale ref.
@@ -853,15 +1129,51 @@ async def list_engagements(running: bool = False) -> dict[str, Any]:
     """
     entries = []
     fs_ids: set[str] = set()
+
+    # Durable start times from Postgres, keyed by id. Best-effort: if the DB is
+    # unreachable we fall back per-entry to the spec file's mtime below.
+    started_map: dict[str, str] = {}
+    try:
+        pool = await _ready_engagements_pool()
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT id::text, started_at FROM engagements")
+                for row in await cur.fetchall():
+                    if row[1] is not None:
+                        started_map[row[0]] = row[1].isoformat()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("list_engagements: could not read started_at from db: %s", exc)
+
     if ENGAGEMENT_DIR.exists():
         for path in sorted(ENGAGEMENT_DIR.iterdir()):
             if not path.is_dir():
                 continue
+            # Engagement dirs are gateway-minted UUIDs. Skip anything else (e.g. a
+            # stray `loot/` an agent wrote one level too high) so junk folders
+            # don't surface as phantom nameless engagements.
+            try:
+                uuid.UUID(path.name)
+            except ValueError:
+                continue
             fs_ids.add(path.name)
             spec_file = path / "spec.yaml"
+            # Start time: prefer the durable engagements.started_at row; fall back
+            # to spec.yaml's mtime (written once at kickoff, never touched after)
+            # for engagements that predate the persisted row.
+            created_at = started_map.get(path.name)
+            if created_at is None:
+                import datetime as _dt  # noqa: PLC0415
+                try:
+                    stat_src = spec_file if spec_file.exists() else path
+                    created_at = _dt.datetime.fromtimestamp(
+                        stat_src.stat().st_mtime, _dt.UTC
+                    ).isoformat()
+                except OSError:
+                    created_at = None
             entry: dict[str, Any] = {
                 "engagement_id": path.name,
                 "status": _engagement_status(path.name),
+                "created_at": created_at,
             }
             if spec_file.exists():
                 try:
@@ -888,10 +1200,15 @@ async def list_engagements(running: bool = False) -> dict[str, Any]:
             "engagement_id": eng_id,
             "status": "running",
             "name": "(no spec on disk)",
+            "created_at": None,
         })
 
     if running:
         entries = [e for e in entries if e.get("status") == "running"]
+    # Newest first. created_at is a uniform ISO/UTC string, so lexical sort is
+    # chronological; a missing timestamp (running task with no dir yet) is newest,
+    # so it sorts to the top.
+    entries.sort(key=lambda e: e.get("created_at") or "9999", reverse=True)
     return {"engagements": entries}
 
 
@@ -996,6 +1313,23 @@ async def engagement_graph(engagement_id: str) -> dict[str, Any]:
         await driver.close()
 
     return {"hosts": hosts, "services": services, "credentials": creds, "cves": cves}
+
+
+@app.get("/engagements/{engagement_id}/report")
+async def get_report(engagement_id: str) -> dict[str, Any]:
+    """Raw `report.md` markdown for an engagement, or `{exists: false}`.
+
+    Validates the id is a UUID before touching the filesystem — this endpoint
+    reads a path under `ENGAGEMENT_DIR`, so an unvalidated id would be a path
+    traversal vector (unlike the DB/Redis endpoints which key by value)."""
+    try:
+        uuid.UUID(engagement_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid engagement id")
+    report_path = ENGAGEMENT_DIR / engagement_id / "report.md"
+    if not report_path.exists():
+        return {"exists": False, "markdown": ""}
+    return {"exists": True, "markdown": report_path.read_text()}
 
 
 @app.get("/engagements/{engagement_id}/stuck")

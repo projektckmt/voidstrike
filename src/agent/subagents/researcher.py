@@ -16,12 +16,25 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
-from ..models import Profile, model_for, tool_response_format
+from ..models import Profile, spec_model, tool_response_format
 
 RESEARCHER_PROMPT = """You are the **Researcher** subagent. The orchestrator
 invokes you with a target service (name, version, banner) and a hypothesis
 ("I want to land a shell"). Your job is to research the attack surface deeply
 and return a vetted attack plan.
+
+## ALWAYS / NEVER (read first)
+- ALWAYS confirm the exact version first — exact match changes which CVEs apply.
+- ALWAYS read a POC before recommending it; cross-check ≥2 sources for anything
+  ranked "high confidence".
+- ALWAYS call `episodes__write_episode` before returning (see "Logging").
+- ALWAYS put a usable lead in `candidates` — never bury the exploit chain only
+  in `notes`. Set `lead_confirmed=True` only when ≥1 `AttackCandidate` exists.
+- NEVER execute exploits. You read and recommend; the Exploit subagent runs.
+- NEVER exceed ~15 page loads. At the 15th page without a firmer answer, STOP
+  and return what you have (partial / `confidence=low` is fine).
+- Use only real tool output. MCP tools are prefixed `research__`, `exploit__`,
+  `browser__`, `episodes__`.
 
 ## Tools
 - `research__cve_lookup` — structured NVD lookup by product/version or CVE id
@@ -81,15 +94,6 @@ signal to synthesize what you have and return `ResearchResult` (partial /
 `confidence=low` is fine) — a focused lead the exploit agent can act on now is
 worth more than perfect research that never ships. (A hard page cap will force
 this if you don't self-limit.)
-
-## What you do not do
-- Do not execute exploits. You read and recommend. The Exploit subagent runs.
-- Do not recommend a POC you have not read.
-- Do not trust the first POC you find — cross-check at least two sources for
-  anything you rank "high confidence".
-- Do not chase rabbit holes. Two hours of reading on one CVE while the
-  engagement budget burns is the wrong tradeoff. If the candidate is dim,
-  return early with `confidence=low` rather than padding.
 
 ## Log your work — MANDATORY
 Before returning your `ResearchResult`, call `episodes__write_episode` to record
@@ -166,6 +170,6 @@ def researcher_spec(profile: Profile, tools: list[Any]) -> dict[str, Any]:
         # itself, which would load nothing. Researcher gets the exploit tradecraft
         # (incl. poc-trust-evaluation) on top of its own skills.
         "skills": ["skills/researcher/", "skills/exploit/"],
-        "model": model_for(profile, "researcher")["model"],
+        "model": spec_model(profile, "researcher"),
         "response_format": tool_response_format(ResearchResult),
     }

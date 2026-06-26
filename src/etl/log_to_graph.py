@@ -44,6 +44,25 @@ async def main() -> None:
             except json.JSONDecodeError:
                 continue
             await _process_episode(driver, payload)
+            await _mark_processed(aconn, payload.get("id"))
+
+
+async def _mark_processed(aconn: Any, episode_id: Any) -> None:
+    """Record that an episode has been projected, so a worker restart's backfill
+    skips it instead of re-running the projection over the whole history. Without
+    this the marker table stays empty and every restart reprocesses everything.
+    """
+    if episode_id is None:
+        return
+    try:
+        async with aconn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO episode_etl_marker (episode_id) VALUES (%s) "
+                "ON CONFLICT (episode_id) DO NOTHING",
+                (episode_id,),
+            )
+    except Exception:  # noqa: BLE001 — marker is best-effort; never break the worker
+        pass
 
 
 async def _ensure_schema(driver: Any) -> None:
@@ -64,7 +83,8 @@ async def _backfill(aconn: Any, driver: Any) -> None:
     async with aconn.cursor() as cur:
         await cur.execute(
             """
-            SELECT id, engagement_id, agent_name, tool_input, tool_output, outcome_tag
+            SELECT id, engagement_id, agent_name, action, tool_input, tool_output,
+                   outcome_tag, ts
             FROM episodes
             WHERE NOT EXISTS (
                 SELECT 1 FROM episode_etl_marker m WHERE m.episode_id = episodes.id
@@ -74,15 +94,18 @@ async def _backfill(aconn: Any, driver: Any) -> None:
             """
         )
         rows = await cur.fetchall()
-        for row in rows:
-            await _process_episode(driver, {
-                "id": row[0],
-                "engagement_id": row[1],
-                "agent_name": row[2],
-                "tool_input": row[3],
-                "tool_output": row[4],
-                "outcome_tag": row[5],
-            })
+    for row in rows:
+        await _process_episode(driver, {
+            "id": row[0],
+            "engagement_id": row[1],
+            "agent_name": row[2],
+            "action": row[3],
+            "tool_input": row[4],
+            "tool_output": row[5],
+            "outcome_tag": row[6],
+            "ts": row[7],
+        })
+        await _mark_processed(aconn, row[0])
 
 
 async def _process_episode(driver: Any, episode: dict[str, Any]) -> None:
@@ -161,9 +184,6 @@ async def _process_episode(driver: Any, episode: dict[str, Any]) -> None:
                 """,
                 cve=cve, eid=engagement_id,
             )
-
-    # Mark this episode as ETL'd so the backfill query doesn't re-pick it.
-    # (Connection re-use kept simple — phase 4 can batch.)
 
 
 if __name__ == "__main__":

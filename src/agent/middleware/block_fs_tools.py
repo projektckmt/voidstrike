@@ -8,7 +8,7 @@ which only filters `request.tools` — it hides the schema from the model, it do
 **not** unbind the tools from the ToolNode. Anthropic models, heavily trained on
 these exact tool names from Claude Code, emit `tool_use` blocks for them anyway,
 and the ToolNode runs them against the in-memory vfs. The orchestrator strips
-the names from its compiled ToolNode (`_strip_orchestrator_fs_tools` in
+the names from its compiled ToolNode (`_strip_orchestrator_blocked_tools` in
 `main.py`); subagents are separate subgraphs that strip never reaches, so we
 govern them at the tool-call boundary here.
 

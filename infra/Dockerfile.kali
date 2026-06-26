@@ -18,7 +18,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     smbclient ldap-utils nfs-common redis-tools rsync \
     curl wget jq \
     iproute2 iputils-ping dnsutils \
+    ntpsec-ntpdate faketime rdate \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
+
+# Kerberos clock-skew handling. AD auth (Kerberos) rejects tickets when the Kali
+# clock differs from the DC by >5 min (KRB_AP_ERR_SKEW / STATUS_ACCOUNT_RESTRICTION).
+# The fix is to sync to the DC, not to patch impacket/certipy:
+#   ntpdate <dc-ip>            (provided by the ntpsec-ntpdate package -> /usr/sbin/ntpdate)
+#   rdate -n <dc-ip>           (fallback if NTP/123 is filtered)
+#   faketime "<dc time>" <cmd> (run one command under the DC's time, no system change)
+# The standalone `ntpdate` package was dropped from Debian/Kali; `ntpsec-ntpdate`
+# ships the same `ntpdate` binary.
 
 # Kali's `wordlists` package ships RockYou compressed. Decompress it at image
 # build time so cracking recipes can use the standard path directly.

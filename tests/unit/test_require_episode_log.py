@@ -96,6 +96,21 @@ def test_errored_episode_write_does_not_count_as_logged():
     assert out is not None and out["jump_to"] == "model"
 
 
+def test_degrades_when_backend_persistently_errors():
+    # Two errored episode writes = the backend is down, not the model skipping
+    # its log step. Stop nudging and let the structured response through, rather
+    # than forcing a pointless re-emission loop while the DB is unreachable.
+    gate = require_episode_log(RESP_TOOL)
+    msgs = [
+        _episode_msg(status="error"),
+        AIMessage(content=""),
+        _episode_msg(status="error"),
+        AIMessage(content=""),
+        _struct_msg(),
+    ]
+    assert _call(gate, msgs) is None
+
+
 def test_bounded_gives_up_after_max_nudges():
     gate = require_episode_log(RESP_TOOL, max_nudges=2)
     # Two prior nudges already in the transcript -> must not nudge a third time.

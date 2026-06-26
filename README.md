@@ -14,7 +14,7 @@ A small set of subagents (Surface, Exploit, PostEx, Analyst) orchestrated by a m
 
 Bounty · Connected · DevArea · DevHub · Helix · Monteverde · Nibbles · Optimum · Querier · Resolute · SmartHIRE · Silentium · Support · WingData · Reactor · Kobold
 
-Run any of these unattended with **`voidstrike challenge`** — it spawns the box via the HTB API, solves it, submits the flags, and tears it down ([details](#htb--hackthebox-auto-provisioning-the-challenge-command)).
+Run any of these unattended with **`voidstrike engage`** — when the spec carries an `htb:` block it spawns the box via the HTB API, solves it, submits the flags, and tears it down ([details](#htb--hackthebox-auto-provisioning)).
 
 **Honest capability profile:** getting an initial foothold (a shell on the box) is a near-solved problem here — recon → vuln → exploit lands reliably across a wide range of targets. **Privilege escalation is hit or miss.** Some boxes go straight to root; others stall on the privesc chain (tunnel-vision on the wrong path, a non-obvious lateral hop, an environment-specific trick), which is where most of the ongoing work is focused.
 
@@ -38,7 +38,7 @@ docker compose -f infra/docker-compose.yml up -d
 docker compose -f infra/docker-compose.yml -f infra/docker-compose.ops.yml \
     --profile dev-targets up -d
 
-# 3b. (HTB / external) Skip ahead — `voidstrike engage`/`challenge` bring up the
+# 3b. (HTB / external) Skip ahead — `voidstrike engage` brings up the
 #     VPN sidecar automatically from the `vpn_config:` field in your spec.
 #     (Pick exactly one of 3a or the VPN overlay — they're mutually exclusive
 #     because `network_mode: service:vpn` is exclusive with ops-net.)
@@ -46,16 +46,16 @@ docker compose -f infra/docker-compose.yml -f infra/docker-compose.ops.yml \
 # 4. Run it
 voidstrike init                                  # one-time onboarding
 
-# HackTheBox: `challenge` SPAWNS the box for you, solves it, submits the flags,
-# and tears it down. Spec carries an `htb:` block; no target IP needed.
+# HackTheBox: an `htb:` block makes `engage` SPAWN the box for you, solve it,
+# submit the flags, and tear it down. No target IP needed.
 # (Requires HTB_TOKEN in .env — see "htb" under Engagement spec.)
-voidstrike challenge docs/examples/htb-challenge.yaml
+voidstrike engage docs/examples/htb-challenge.yaml
 
 # A target that already exists (local VM, a box you spawned, a client IP):
 voidstrike engage docs/examples/metasploitable.yaml --profile eco
 ```
 
-For HackTheBox, prefer **`challenge`** — it provisions the machine via the HTB API so you never hand it a per-spawn IP. Use **`engage`** when the target is already up and you're managing it yourself.
+The spec drives the target: with an `htb:` block, `engage` provisions the machine via the HTB API so you never hand it a per-spawn IP; without one, it runs against the target you provide and manage.
 
 The CLI streams every subagent's output (color-coded) to your terminal. The web dashboard (optional) is at http://localhost:3000.
 
@@ -77,8 +77,8 @@ The VPN sidecar pattern: a single `vpn` container holds the OpenVPN tunnel, and 
 
 > **Use a TCP `.ovpn`, not UDP.** Under sustained offensive traffic — long `nmap` scans, brute/spray loops, a chatty reverse shell — UDP OpenVPN tunnels tend to drop and silently flap, which surfaces as scans that hang, shells that die mid-command, and "host unreachable" mid-run. A TCP-based config is noticeably more stable for these long-lived, high-connection-count workloads (slower, but it doesn't fall over). If your provider offers both (HackTheBox does), pick the **TCP** profile. If a run keeps losing the target, this is the first thing to check.
 
-- **The `.ovpn` is declared in the engagement YAML.** Set `vpn_config:` to a path (absolute, or relative to the spec file) — `voidstrike engage`/`challenge` resolve it and bring up the vpn sidecar before starting. Resolution precedence: `--vpn` CLI flag > `VPN_FILE` env var > spec's `vpn_config:`.
-- One VPN per compose stack — to swap targets, change the spec's `vpn_config:` and re-run `voidstrike engage`/`challenge`. Compose recreates the sidecar when the mount source changes.
+- **The `.ovpn` is declared in the engagement YAML.** Set `vpn_config:` to a path (absolute, or relative to the spec file) — `voidstrike engage` resolve it and bring up the vpn sidecar before starting. Resolution precedence: `--vpn` CLI flag > `VPN_FILE` env var > spec's `vpn_config:`.
+- One VPN per compose stack — to swap targets, change the spec's `vpn_config:` and re-run `voidstrike engage`. Compose recreates the sidecar when the mount source changes.
 - While the VPN overlay is active, the local dev targets (DVWA, Juice Shop) on `ops-net` are NOT reachable from the MCP containers. Pick local-dev or VPN, not both.
 - Pass `--skip-vpn` to leave compose alone (use when the sidecar is already up with the right .ovpn, or for a non-VPN run).
 
@@ -147,7 +147,7 @@ roe:
 | `vpn_config` | no | none | Path to a `.ovpn`; `voidstrike engage` brings up the VPN sidecar. Precedence: `--vpn` > `VPN_FILE` env > this. |
 | `notes` | no | `""` | Operator briefing — see below. |
 | `credentials` | no | `[]` | Assumed-breach credentials — see below. |
-| `htb` | no | none | HackTheBox auto-provisioning (spawn/teardown). When set, run with `voidstrike challenge` — see below. |
+| `htb` | no | none | HackTheBox auto-provisioning (spawn/teardown). When set, `voidstrike engage` provisions the box automatically — see below. |
 | `roe` | no¹ | auto | Rules of engagement. ¹Required in `engagement` mode (with `signed_document_path`). |
 
 ### `notes` — operator briefing
@@ -169,12 +169,12 @@ A list of credentials the engagement starts with (as in a real "assumed-breach" 
 
 > Don't pin *derived* secrets (a cracked hash, a shadow-cred NTLM) for a box that re-randomizes per spawn — those go stale. Pin only fixed starting creds, and describe how to re-derive the rest in `notes`.
 
-### `htb` — HackTheBox auto-provisioning (the `challenge` command)
+### `htb` — HackTheBox auto-provisioning
 
-Add an `htb:` block to have the target **spawned, solved, and torn down automatically** through the HTB API, instead of supplying a static `targets:` IP that you spawn/reset by hand. Run such a spec with **`voidstrike challenge`** (not `engage`):
+Add an `htb:` block to have the target **spawned, solved, and torn down automatically** through the HTB API, instead of supplying a static `targets:` IP that you spawn/reset by hand. The spec drives it — `voidstrike engage` detects the `htb:` block and provisions the box; no separate command:
 
 ```bash
-voidstrike challenge docs/examples/htb-challenge.yaml
+voidstrike engage docs/examples/htb-challenge.yaml
 ```
 
 ```yaml
@@ -193,7 +193,7 @@ vpn_config: ../machines_us-3.ovpn
 # no `targets:` — the spawned box's IP is filled in automatically
 ```
 
-Lifecycle per run: **resolve → spawn → wait for IP → run one engagement against it → submit captured flags → teardown.**
+Provisioning runs **gateway-side** — the `/engagements` endpoint detects the `htb:` block and brackets the run, so the CLI *and* the web dashboard both get it from the spec alone. Lifecycle per run: **resolve → spawn → wait for IP → run one engagement against it → submit captured flags → teardown.**
 
 | `htb:` sub-field | Required | Default | Notes |
 |---|---|---|---|
@@ -206,11 +206,10 @@ Lifecycle per run: **resolve → spawn → wait for IP → run one engagement ag
 | `spawn_timeout_s` | no | `180` | Max wait for the box to get an IP. |
 
 Notes:
-- **Requires `HTB_TOKEN`** (HTB account → *App Tokens*) in the environment or `.env`.
-- The VPN is brought up exactly like `engage` (`vpn_config` / `--vpn` / `VPN_FILE`) — HTB boxes are only reachable over the lab VPN. **Use a TCP `.ovpn`** (see [VPN flow](#vpn-flow)).
-- CLI overrides: `--teardown/--no-teardown` (force the policy), `--force` (terminate a *different* already-spawned machine first), plus the usual `--profile` / `--skip-vpn` / `--debug-log`.
-- **A challenge is atomic:** Ctrl-C cancels the run and still tears the machine down — unlike `engage`, which pauses for `voidstrike resume`.
-- `engage` vs `challenge`: `engage` runs against a target **you** provide and manage; `challenge` is one `engage` run wrapped in HTB spawn → flag-submit → teardown.
+- **Requires `HTB_TOKEN`** (HTB account → *App Tokens*) in `.env` — the **gateway** reads it (`env_file: ../.env` in compose), since provisioning is gateway-side. A different machine already spawned on the account is terminated first (HTB allows one active box).
+- The VPN is brought up by the CLI before the run (`vpn_config` / `--vpn` / `VPN_FILE`) — the gateway can't control the sidecar — and HTB boxes are only reachable over the lab VPN. **Use a TCP `.ovpn`** (see [VPN flow](#vpn-flow)).
+- Teardown is **spec-driven** via `htb.teardown` (`on_complete` / `on_success` / `never`); the usual `--profile` / `--skip-vpn` / `--debug-log` still apply.
+- **An HTB run is atomic:** Ctrl-C cancels the run and the gateway still tears the machine down — whereas a static-target `engage` pauses for `voidstrike resume`. The spec's `htb:` block selects this: with it, the gateway brackets the run in HTB spawn → flag-submit → teardown; without it, it runs against a target you provide and manage.
 
 ## Three modes
 
@@ -234,21 +233,34 @@ of mode — use `--profile` on the CLI to override the value in the spec.
 | `eco` (default) | HIGH | MID | HIGH | MID | MID | MID | HIGH |
 | `max` | HIGH | HIGH | HIGH | HIGH | HIGH | HIGH | HIGH |
 | `test` | LOW | LOW | LOW | LOW | LOW | LOW | LOW |
+| `qwen` | every role on `qwen/qwen3.7-max` (via OpenRouter) | | | | | | |
+| `gpt` | every role on `gpt-5.5` | | | | | | |
 
 ¹ The AD specialist (opt-in via `MCP_AD_URL`) rides the Exploit tier.
+² `qwen` and `gpt` are single-model profiles — one model for every role, for
+cost/eval runs off the tiered Anthropic-first defaults.
 
 Tier mappings live in [`src/agent/models.py`](src/agent/models.py); the LiteLLM
 routing chains are in [`infra/litellm-config.yaml`](infra/litellm-config.yaml).
 
 ### Tier → model mapping
 
-LiteLLM routes each tier through a fallback chain. First-choice is listed first; the proxy falls through on rate-limit or outage.
-
 | Tier | Anthropic (1st) | OpenAI (fallback) | Google (fallback) | Local fallback |
 |---|---|---|---|---|
-| **HIGH** | `claude-opus-4-8` | `gpt-5` | `gemini-3-pro` | — |
-| **MID** | `claude-sonnet-4-6` | `gpt-5-mini` | `gemini-flash` | — |
-| **LOW** | `claude-haiku-4-5` | `gpt-5-nano` | — | `qwen3-32b` (Ollama) |
+| **HIGH** | `claude-opus-4-8` | `gpt-5.5` | `gemini-3-pro` | — |
+| **MID** | `claude-sonnet-4-6` | `gpt-5.4-mini` | `gemini-flash` | — |
+| **LOW** | `claude-haiku-4-5` | `gpt-5.4-nano` | — | `qwen3-32b` (Ollama) |
+
+By default the agent routes all model calls through the LiteLLM proxy (requires
+`LITELLM_MASTER_KEY`). That activates the fallback chains in
+[`infra/litellm-config.yaml`](infra/litellm-config.yaml) plus a Redis response
+cache, spend/budget tracking, and Langfuse observability, and routes every model
+including the `qwen`/OpenRouter profile.
+
+Set `VOIDSTRIKE_USE_LITELLM=false` to call each provider's SDK directly instead —
+this preserves Anthropic-native prompt caching (cheaper on Opus-heavy runs), but
+the fallback chain above goes inactive (a first-choice outage is handled by
+per-call retry, not provider failover) and `qwen` talks to OpenRouter directly.
 
 ### Why these choices
 

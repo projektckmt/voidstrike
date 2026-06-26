@@ -37,10 +37,12 @@ _PRICING_USD_PER_M: dict[str, dict[str, float]] = {
     "claude-sonnet-4-6": {"in":  3.0, "out": 15.0, "cache_read": 0.30, "cache_write":  3.75},
     "claude-sonnet-4-5": {"in":  3.0, "out": 15.0, "cache_read": 0.30, "cache_write":  3.75},
     "claude-haiku-4-5":  {"in":  0.80, "out": 4.00, "cache_read": 0.08, "cache_write":  1.00},
-    # OpenAI (rough — list prices for gpt-5-class as of writing)
-    "gpt-5":             {"in": 10.0, "out": 30.0, "cache_read": 1.00, "cache_write": 10.0},
-    "gpt-5-mini":        {"in":  0.30, "out": 2.40, "cache_read": 0.075, "cache_write": 0.30},
-    "gpt-5-nano":        {"in":  0.10, "out": 0.80, "cache_read": 0.025, "cache_write": 0.10},
+    # OpenAI (rough — list prices for gpt-5-class as of writing; gpt-5.5 reuses
+    # gpt-5 figures and 5.4-mini/nano reuse the 5-mini/nano figures pending
+    # confirmed pricing)
+    "gpt-5.5":           {"in": 10.0, "out": 30.0, "cache_read": 1.00, "cache_write": 10.0},
+    "gpt-5.4-mini":      {"in":  0.30, "out": 2.40, "cache_read": 0.075, "cache_write": 0.30},
+    "gpt-5.4-nano":      {"in":  0.10, "out": 0.80, "cache_read": 0.025, "cache_write": 0.10},
 }
 
 # Used when we get usage data but can't identify the model — better to log

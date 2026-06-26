@@ -65,6 +65,23 @@ def require_episode_log(
                 return True
         return False
 
+    def _attempted_but_backend_failed(messages: list[Any]) -> bool:
+        """True once the model has called the episode tool and it errored ≥2
+        times — i.e. the backend is down, not the model skipping its log step or
+        sending one malformed call. One error still earns a nudge (a retry may
+        fix bad args); a second proves it's infra. Continuing to nudge then just
+        burns turns and forces a pointless re-emission of the structured response
+        (a real run re-returned its findings 3× this way while the episodes DB
+        was unreachable). Degrade gracefully: let the response through."""
+        errored = sum(
+            1
+            for m in messages
+            if isinstance(m, ToolMessage)
+            and (getattr(m, "name", "") or "").startswith(episode_tool)
+            and getattr(m, "status", None) == "error"
+        )
+        return errored >= 2
+
     def _nudges_so_far(messages: list[Any]) -> int:
         return sum(
             1
@@ -88,6 +105,8 @@ def require_episode_log(
 
             if _logged(messages):
                 return None
+            if _attempted_but_backend_failed(messages):
+                return None  # backend down — don't punish the model for infra
             if _nudges_so_far(messages) >= max_nudges:
                 return None  # bounded — give up rather than loop forever
 

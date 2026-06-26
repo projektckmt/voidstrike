@@ -74,6 +74,33 @@ def test_incremental_delta_falls_back_to_full_on_scrollback_roll():
     assert server._incremental_delta(prev, cur) == cur
 
 
+def test_tmux_read_clamps_max_bytes_to_ceiling(monkeypatch):
+    # A caller asking for 30_000 must still be clamped to the server ceiling —
+    # an over-large read bloats every later turn's transcript (quadratic).
+    big = "x" * 50000
+
+    async def fake_tmux(*args):
+        return (0, big, "")
+
+    monkeypatch.setattr(server, "_tmux", fake_tmux)
+    server._REGISTRY.sessions["s"] = server.SessionState(name="s", kind="shell")
+    result = _run(server.tmux_read("s", wait_for_prompt=False, max_bytes=30000))
+    assert result["ok"] is True
+    assert len(result["output"]) == server._MAX_READ_BYTES
+
+
+def test_tmux_read_honours_smaller_max_bytes(monkeypatch):
+    big = "y" * 50000
+
+    async def fake_tmux(*args):
+        return (0, big, "")
+
+    monkeypatch.setattr(server, "_tmux", fake_tmux)
+    server._REGISTRY.sessions["s"] = server.SessionState(name="s", kind="shell")
+    result = _run(server.tmux_read("s", wait_for_prompt=False, max_bytes=2000))
+    assert len(result["output"]) == 2000
+
+
 # --- listener-guard on tmux_send ------------------------------------------
 #
 # These are pure unit tests against the in-process registry and `_tmux`

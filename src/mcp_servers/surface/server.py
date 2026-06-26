@@ -63,7 +63,11 @@ async def _exec(cmd: list[str], timeout_s: int | None = 600) -> dict[str, Any]:
 @app.tool()
 async def nmap_quick(target: str, top_ports: int = 1000, scripts: str = "default") -> dict[str, Any]:
     """Fast nmap pass — top ports + default scripts. Use first."""
-    cmd = ["nmap", "-Pn", "-T4", "--top-ports", str(top_ports), "-sV", "-sC", "-oX", "-", target]
+    # `--script default` ≡ the old hardcoded `-sC`; wiring the `scripts` arg in
+    # makes the param actually do something (it was previously dead — `-sC` ran
+    # regardless of what the caller passed).
+    cmd = ["nmap", "-Pn", "-T4", "--top-ports", str(top_ports), "-sV",
+           "--script", scripts, "-oX", "-", target]
     res = await _exec(cmd, timeout_s=600)
     if not res["ok"]:
         return res
@@ -80,6 +84,38 @@ async def nmap_full(target: str, scripts: str = "default,vuln", reason: str = ""
     """
     cmd = ["nmap", "-Pn", "-p-", "-T4", "-sV", "-sC", "--script", scripts, "-oX", "-", target]
     res = await _exec(cmd, timeout_s=1800)
+    if not res["ok"]:
+        return res
+    return _summarize_nmap_xml(res["stdout"], stderr=res["stderr"])
+
+
+@app.tool()
+async def nmap_udp(
+    target: str, top_ports: int = 100, scripts: str = "", reason: str = ""
+) -> dict[str, Any]:
+    """UDP service scan (-sU) over the top UDP ports.
+
+    Use when a TCP scan is thin and UDP-only services are plausible (DNS 53,
+    SNMP 161, TFTP 69, NTP 123, IKE 500, NetBIOS 137, mDNS 5353, etc.). UDP
+    scanning is slow — ICMP port-unreachable rate-limiting makes it inherently
+    so — which is why this defaults to the top 100 UDP ports rather than 1000;
+    raise `top_ports` only when a target hint points at a higher one. `reason`
+    should briefly note why a UDP pass is warranted.
+
+    `scripts` is opt-in (`--script`), empty by default to keep the base scan
+    fast. Set it once a UDP service responds and a targeted NSE script earns its
+    cost — e.g. `scripts="snmp-info"`, `"dns-recursion"`, `"ntp-info"`,
+    `"ike-version"`. Don't pass `"default"`/`"vuln"` for a blanket UDP pass; the
+    broad scripts mostly time out on UDP and balloon the runtime.
+    """
+    # ponytail: top-100 UDP keeps runtime under the cap; top-1000 UDP at -T4
+    # routinely exceeds 20 min. -sV always; -sC/broad scripts are off unless the
+    # caller names a targeted script, since most NSE scripts don't pay off on UDP.
+    cmd = ["nmap", "-Pn", "-sU", "-T4", "--top-ports", str(top_ports), "-sV"]
+    if scripts.strip():
+        cmd += ["--script", scripts]
+    cmd += ["-oX", "-", target]
+    res = await _exec(cmd, timeout_s=1200)
     if not res["ok"]:
         return res
     return _summarize_nmap_xml(res["stdout"], stderr=res["stderr"])
@@ -859,17 +895,22 @@ async def nuclei(
     let it finish. Use `max_runtime_s` only to bound a known-slow/flapping host
     (you'll get whatever matched before the cap).
 
-    **Normally call this with just `target`** — by default it scans all
-    severities (like a plain `nuclei -u <target>`), so it picks up the `info`/`low`
-    tech-detection and exposure hits too, not just high-severity CVEs.
+    **Bare `target` = full all-severity sweep** (like `nuclei -u <target>`): use
+    it to fingerprint an unknown host root — it picks up `info`/`low` tech and
+    exposure hits, not just CVEs, but takes minutes. **Once you know what you're
+    scanning, scope it** with `tags=`/`severity=` so you run the relevant template
+    family instead of the whole set — that's the normal way to cut runtime when
+    the target is a specific endpoint or an already-fingerprinted stack.
 
     - `severity`: comma list to filter (e.g. `critical,high,medium`). Default is
-      empty = all severities. Narrow it only if the all-severity run is too noisy.
-    - `tags`: OMIT this unless you know the exact nuclei tag. nuclei tags are a
-      fixed vocabulary — product/framework names like `nextjs`, `nodejs`,
-      `react` are NOT tags and match ZERO templates (the scan returns nothing).
-      Valid examples: `cve`, `exposure`, `misconfig`, `tech`, `wordpress`,
-      `tomcat`. When in doubt, leave it unset rather than guessing.
+      empty = all severities. A floor (e.g. `high,critical`) is a safe way to cut
+      runtime when you don't have a precise tag.
+    - `tags`: scope to a vuln class or technology you've identified (`cve`,
+      `exposure`, `misconfig`, `apache`, `cgi`, `tomcat`, `wordpress`, `rce`,
+      `lfi`). nuclei tags are a FIXED vocabulary — product/framework names like
+      `nextjs`, `nodejs`, `react` are NOT tags and match ZERO templates. If unsure
+      a tag is real, don't guess — use a `severity=` floor or `max_runtime_s=`
+      cap, or leave it unset for the full sweep.
     - `templates`: an explicit template id/path/dir to run instead of the
       default set (e.g. a single `http/cves/2025/CVE-2025-57819.yaml`).
     - `max_runtime_s`: overall wall-clock budget in seconds. Default (unset) =
@@ -1018,11 +1059,11 @@ async def ffuf(
     for subdomain/vhost enumeration (that fuzzes the Host header, not the path —
     use `vhost_enum`).
 
-    `wordlist` defaults to a small `common.txt` (~4-5k entries) so the first pass
-    returns fast. Only escalate to a bigger list (e.g.
-    `/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt` or
-    `raft-large-words.txt`) when the common pass found a few hits but the app
-    clearly has more surface — don't open with a 30k-entry list."""
+    `wordlist` defaults to `/usr/share/seclists/Discovery/Web-Content/big.txt`
+    (~20k entries) — good coverage without grinding. Pass `common.txt` (~4-5k) for
+    a fast smoke pass on a slow/rate-limited target, or a larger list
+    (`directory-list-2.3-medium.txt` ~220k, `raft-large-words.txt`) for thorough
+    coverage when big.txt found surface but the app clearly has more."""
     if wordlist is None:
         wordlist = _default_ffuf_wordlist()
     if "FUZZ" not in url:
@@ -1068,6 +1109,10 @@ async def ffuf(
         # path matches the whole wordlist (thousands of entries) → the result is
         # offloaded to /large_tool_results and the agent can't act on it.
         "-ac",
+        # Ignore wordlist comments — harmless on our comment-free default
+        # (big.txt), but skips the `#` header lines if the agent passes a
+        # dirbuster directory-list-2.3 file via `wordlist=`.
+        "-ic",
         "-s",
     ]
     if extensions:
@@ -1227,21 +1272,23 @@ def _shape_ffuf_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
-# First-pass ffuf wordlist: a small "common" list (~4-5k entries) so the initial
-# directory sweep finishes in seconds, not minutes. The agent escalates to bigger
-# lists (raft-medium/large) via the `wordlist=` arg only when the small pass shows
-# there's surface but found little — see the surface prompt's web-fuzzing budget.
-# Tried in order; first that exists wins (dirb's list and SecLists' both ship on Kali).
+# First-pass ffuf wordlist: SecLists' big.txt (~20k entries) — a solid balance of
+# coverage vs. speed for the default sweep, bigger than `common.txt` (~4-5k)
+# without the ~220k cost of directory-list-2.3-medium. The agent can pass a
+# smaller list (`common.txt`) for a fast smoke pass, or a larger one
+# (directory-list-2.3-medium, raft-large) for thorough coverage, via `wordlist=`
+# — see the surface prompt's web-fuzzing budget. Tried in order; first that
+# exists wins (smaller lists remain as fallbacks if big.txt isn't installed).
 _FFUF_DEFAULT_WORDLISTS = (
+    "/usr/share/seclists/Discovery/Web-Content/big.txt",
     "/usr/share/seclists/Discovery/Web-Content/common.txt",
     "/usr/share/wordlists/dirb/common.txt",
-    # Fallback to the old medium default only if neither common list is present.
-    "/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt",
 )
 
 
 def _default_ffuf_wordlist() -> str:
-    """Pick the first available small/common wordlist for the initial ffuf pass."""
+    """Pick the first available default wordlist (raft-medium, else a common list)
+    for the initial ffuf pass."""
     for wl in _FFUF_DEFAULT_WORDLISTS:
         if Path(wl).is_file():
             return wl
