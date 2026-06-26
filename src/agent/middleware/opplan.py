@@ -90,7 +90,10 @@ def opplan_middleware():
     Orchestrator-only. Mirrors TodoListMiddleware's shape so deepagents registers
     the tool (via `self.tools`) and threads the `opplan` state key (via
     `state_schema`)."""
-    from typing import Annotated  # noqa: PLC0415
+    from typing import (
+        Annotated,  # noqa: PLC0415
+        NotRequired,  # noqa: PLC0415
+    )
 
     from langchain.agents.middleware import AgentMiddleware  # noqa: PLC0415
     from langchain.agents.middleware.types import AgentState, OmitFromInput  # noqa: PLC0415
@@ -98,7 +101,6 @@ def opplan_middleware():
     from langchain_core.tools import StructuredTool  # noqa: PLC0415
     from langgraph.types import Command  # noqa: PLC0415
     from pydantic import BaseModel  # noqa: PLC0415
-    from typing_extensions import NotRequired  # noqa: PLC0415
 
     class OpplanState(AgentState):
         opplan: Annotated[NotRequired[dict[str, Any]], OmitFromInput]

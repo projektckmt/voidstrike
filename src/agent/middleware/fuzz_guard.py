@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
+
 from ._util import parse_tool_content as _parse_tool_content
 
 
