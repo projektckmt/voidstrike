@@ -224,15 +224,20 @@ def _litellm_enabled() -> bool:
     """Whether to route model calls through the in-cluster LiteLLM proxy.
 
     **On by default** — unset means enabled. Only an explicit falsy value
-    (`0`/`false`/`no`/`off`) opts out (back to direct provider SDKs, which keep
-    Anthropic-native prompt caching). The proxy gives provider fallback
-    (HIGH→OpenAI→Google etc., see infra/litellm-config.yaml `router_settings`), a
-    Redis response cache, spend/budget tracking, and Langfuse observability — but
-    routing Anthropic models as OpenAI-format calls *loses Anthropic-native prompt
-    caching* (the deepagents AnthropicPromptCachingMiddleware only fires on
-    `anthropic:` string models via the harness profile; through the proxy you fall
-    back to LiteLLM's exact-match Redis cache instead). Set
-    `VOIDSTRIKE_USE_LITELLM=false` to take the direct path on Opus-heavy runs.
+    (`0`/`false`/`no`/`off`) opts out (back to direct provider SDKs). The proxy
+    gives provider fallback (HIGH→OpenAI→Google etc., see
+    infra/litellm-config.yaml `router_settings`), a Redis response cache,
+    spend/budget tracking, and Langfuse observability.
+
+    Anthropic prompt caching still works on the proxy path: deepagents'
+    AnthropicPromptCachingMiddleware can't fire (it requires a ChatAnthropic
+    instance; the proxy hands deepagents a ChatOpenAI), but LiteLLM injects the
+    `cache_control` breakpoints itself when forwarding to an `anthropic/` route.
+    Verified on a real Opus run: ~63% of input tokens were cache reads
+    (`usage_metadata.input_token_details.cache_read`). NB the OpenAI-format usage
+    LiteLLM returns has no cache-*creation* field, so `cache_creation` always
+    reads 0 through the proxy even though caches are being written — don't read
+    that as "caching off"; `cache_read` is the real signal.
 
     NB: requires a running proxy at LITELLM_PROXY_URL + LITELLM_MASTER_KEY; on a
     non-Docker local run with neither, set VOIDSTRIKE_USE_LITELLM=false."""
@@ -262,7 +267,7 @@ def _resolve_litellm(
     the direct-openrouter fallback. Note: handing deepagents an
     instance here means the orchestrator won't get the Anthropic HarnessProfile's
     *schema* trimming of fs tools — but those tools are still removed from the
-    ToolNode in main.py (`_strip_orchestrator_fs_tools`), and the grammar-limit
+    ToolNode in main.py (`_strip_orchestrator_blocked_tools`), and the grammar-limit
     crash was already fixed by tool-name prefixing (see profile.py); so this is a
     token cost, not a correctness issue.
 
@@ -296,7 +301,9 @@ def routing_summary() -> str:
         key = "set" if os.environ.get("LITELLM_MASTER_KEY") else "MISSING (calls will fail)"
         return (
             f"LiteLLM proxy ENABLED → {url} (master key: {key}); all models routed "
-            f"through it (fallback/cache/budget active, Anthropic prompt caching off)"
+            f"through it (fallback/cache/budget active; LiteLLM injects Anthropic "
+            f"prompt-cache breakpoints on anthropic/ routes — verified ~63% cache "
+            f"reads on a real Opus run)"
         )
     msg = (
         "direct provider SDKs (LiteLLM proxy OFF via VOIDSTRIKE_USE_LITELLM=false; "

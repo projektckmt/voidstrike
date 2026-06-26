@@ -558,6 +558,116 @@ async def _await_hitl_reply(engagement_id: str, payload: Any) -> Any:
         await _emit(engagement_id, {"event": "hitl_resolved", "kind": kind})
 
 
+def _walk_record_flags(obj: Any) -> list[str]:
+    """Recursively pull flag strings from `record_flag` tool calls anywhere in a
+    (JSON-safe) event payload — the orchestrator records each captured flag via
+    that tool. Mirrors the CLI's extractor so HTB flag-submit works server-side."""
+    found: list[str] = []
+    if isinstance(obj, dict):
+        if obj.get("name") == "record_flag":
+            args = obj.get("args") or obj.get("input") or {}
+            flag = args.get("flag") if isinstance(args, dict) else None
+            if isinstance(flag, str) and flag.strip():
+                found.append(flag.strip())
+        for v in obj.values():
+            found.extend(_walk_record_flags(v))
+    elif isinstance(obj, list):
+        for v in obj:
+            found.extend(_walk_record_flags(v))
+    return found
+
+
+def _rewrite_spec_targets(spec_path: str, targets: list[str]) -> None:
+    """Persist `targets` into the saved spec so build_agent + the kickoff use the
+    spawned box's IP. Written as JSON (valid YAML), which `from_yaml` reads back."""
+    from ..schemas.engagement import EngagementSpec  # noqa: PLC0415
+    spec = EngagementSpec.from_yaml(spec_path)
+    spec.targets = targets
+    Path(spec_path).write_text(spec.model_dump_json(indent=2))
+
+
+async def _htb_spawn(cfg: Any, engagement_id: str):
+    """Resolve + spawn (or reuse) the spec's HTB machine and return its live IP.
+
+    Returns `(client, machine, ip)`. The caller owns `client` and must
+    `aclose()` it (see `_htb_finalize`). Raises `HtbError` on failure (after
+    closing the client). A *different* already-spawned box is terminated first —
+    HTB allows one active machine, so a leftover would just block the run."""
+    from ..integrations.htb import HtbClient, HtbError  # noqa: PLC0415
+
+    token = os.environ.get("HTB_TOKEN", "").strip()
+    if not token:
+        raise HtbError(
+            "spec has an `htb:` block but HTB_TOKEN is not set in the gateway "
+            "environment — add it to .env so the gateway can provision the box"
+        )
+
+    async def ev(stage: str, msg: str) -> None:
+        await _emit(engagement_id, {"event": "htb", "stage": stage, "message": msg})
+
+    client = HtbClient(token=token)
+    try:
+        machine = await client.resolve_machine(cfg.machine)
+        await ev("resolve", f"id={machine.id} kind={machine.kind}")
+        active = await client.active_machine()
+        if active and active.id != machine.id:
+            await ev("preflight", f"terminating other active machine {active.name!r}")
+            await client.terminate(active)
+        if active and active.id == machine.id:
+            machine.ip = active.ip
+            if cfg.reset_before:
+                await ev("reset", "resetting already-spawned target to clean state")
+                await client.reset(machine)
+            await ev("spawn", "target already spawned; reusing")
+        else:
+            await ev("spawn", "requesting spawn")
+            await client.spawn(machine)
+        ip = machine.ip or await client.wait_for_ip(machine, timeout_s=cfg.spawn_timeout_s)
+        machine.ip = ip
+        await ev("ready", f"target IP {ip}")
+        return client, machine, ip
+    except Exception:
+        await client.aclose()
+        raise
+
+
+async def _htb_finalize(
+    client: Any, machine: Any, cfg: Any, *, status: str, flags: list[str], engagement_id: str
+) -> None:
+    """Submit captured flags (best-effort) and tear the box down per policy, then
+    close the client. Never raises — teardown failure must not mask the run.
+
+    Safe to call from `_run_engagement`'s finally: by then any operator-cancel
+    CancelledError has been caught (not re-raised), so these awaits run."""
+    from ..agent.challenge import _should_teardown  # noqa: PLC0415
+    from ..integrations.htb import HtbError  # noqa: PLC0415
+
+    async def ev(stage: str, msg: str) -> None:
+        await _emit(engagement_id, {"event": "htb", "stage": stage, "message": msg})
+
+    try:
+        submitted: list[str] = []
+        if cfg.submit_flags and flags:
+            for flag in flags:
+                try:
+                    await client.submit_flag(machine, flag, difficulty=cfg.difficulty)
+                    submitted.append(flag)
+                except HtbError as exc:
+                    await ev("flag", f"submit failed ({flag[:8]}…): {exc}")
+            if submitted:
+                await ev("flag", f"{len(submitted)} flag(s) submitted to HTB")
+        if _should_teardown(cfg.teardown, status):
+            try:
+                await client.terminate(machine)
+                await ev("teardown", "machine terminated")
+            except HtbError as exc:
+                await ev("teardown", f"failed (leaving machine up): {exc}")
+        else:
+            await ev("teardown", f"skipped (policy={cfg.teardown}, status={status})")
+    finally:
+        await client.aclose()
+
+
 async def _run_engagement(
     spec_path: str,
     engagement_id: str,
@@ -580,6 +690,15 @@ async def _run_engagement(
     else:
         await _emit(engagement_id, {"event": "resumed", "engagement_id": engagement_id})
 
+    # HTB provisioning state (set during spawn below; drives flag-submit + teardown
+    # in the finally). Stays None for static targets and on resume.
+    htb_cfg = None
+    htb_client = None
+    htb_machine = None
+    htb_flags: list[str] = []
+    htb_rooted = False
+    htb_status = "error"
+
     try:
         if not resume:
             # Clear stale tmux sessions (listeners, landed shells, msfconsole
@@ -595,6 +714,18 @@ async def _run_engagement(
 
         from ..agent.main import build_agent
         from ..schemas.engagement import EngagementSpec
+
+        # HTB auto-provisioning (spec-driven): if the spec carries an `htb:` block,
+        # spawn the named box and write its IP into `targets:` BEFORE the agent
+        # builds. This makes provisioning work for ANY client (CLI, web) — the
+        # spec alone decides. On resume the box is already up and the spec already
+        # holds its IP, so we skip spawning (and skip auto-teardown/submit).
+        if not resume:
+            _prov_spec = EngagementSpec.from_yaml(spec_path)
+            if _prov_spec.htb is not None:
+                htb_cfg = _prov_spec.htb
+                htb_client, htb_machine, _ip = await _htb_spawn(htb_cfg, engagement_id)
+                _rewrite_spec_targets(spec_path, [_ip])
 
         # The system prompt has the engagement context (target, objective, mode);
         # we kick off the loop with a brief operator-style HumanMessage. Without
@@ -637,11 +768,22 @@ async def _run_engagement(
                         subgraphs=True,
                     ):
                         namespace, update = _unpack_stream_event(raw)
+                        safe_update = _safe(update)
                         await _emit(engagement_id, {
                             "event": "step",
                             "namespace": list(namespace),
-                            "data": _safe(update),
+                            "data": safe_update,
                         })
+                        # HTB runs: harvest captured flags + a rooted signal from
+                        # the event stream so we can submit them after the run.
+                        if htb_cfg is not None:
+                            for _f in _walk_record_flags(safe_update):
+                                if _f not in htb_flags:
+                                    htb_flags.append(_f)
+                            if not htb_rooted:
+                                _blob = json.dumps(safe_update).lower()
+                                if "objective_met" in _blob or "root flag captured" in _blob:
+                                    htb_rooted = True
                         intr = _extract_interrupt(update)
                         if intr is not None:
                             pending_interrupt = intr
@@ -719,6 +861,13 @@ async def _run_engagement(
         # using whatever durable state we have.
         await _ensure_report_exists(engagement_id, spec_path)
 
+        # HTB success = a root/objective signal, or enough flags for the spec.
+        # Drives the on_success teardown policy and what we report.
+        if htb_cfg is not None:
+            _ef = EngagementSpec.from_yaml(spec_path).expected_flags
+            _solved = htb_rooted or (_ef is not None and _ef > 0 and len(htb_flags) >= _ef)
+            htb_status = "solved" if _solved else "failed"
+
         await _emit(engagement_id, {"event": "complete"})
         log.info("engagement %s completed normally", engagement_id)
     except asyncio.CancelledError:
@@ -745,6 +894,19 @@ async def _run_engagement(
             "traceback": tb,
         })
     finally:
+        # HTB teardown + flag-submit (best-effort, never raises). Runs on every
+        # exit path — success, failure, error, or operator cancel — so a box we
+        # spawned is never stranded. Safe here: any cancel was already caught
+        # above (not re-raised), so these awaits complete. On cancel htb_status
+        # is still "error", so the default on_complete policy still tears down.
+        if htb_client is not None and htb_machine is not None and htb_cfg is not None:
+            try:
+                await _htb_finalize(
+                    htb_client, htb_machine, htb_cfg,
+                    status=htb_status, flags=htb_flags, engagement_id=engagement_id,
+                )
+            except Exception:  # noqa: BLE001
+                log.exception("engagement %s: HTB finalize failed (non-fatal)", engagement_id)
         await _emit(engagement_id, {"event": "end"})
         # Remove our task tracking entry so a future engagement with the
         # same ID (rare, but possible on resume) doesn't see a stale ref.

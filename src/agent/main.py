@@ -26,6 +26,7 @@ from .middleware import (
     idle_read_guard,
     model_retry,
     no_progress_guard,
+    opplan_middleware,
     repeat_guard,
     require_episode_log,
     require_structured_response,
@@ -466,6 +467,10 @@ async def build_agent(
                 # and blocks the orchestrator until BOTH return — a dead-end
                 # branch stalls the run. See serialize_tasks.py / debug_reactor3.
                 serialize_tasks(),
+                # opplan_middleware binds `write_opplan` and tracks the OPPLAN in
+                # state (orchestrator-only; subagents keep flat write_todos). The
+                # OPPLAN prompt fragment points the orchestrator at this tool.
+                opplan_middleware(),
                 stuck_detector(threshold=15),
                 *(
                     [flag_completion_gate(spec.expected_flags)]
@@ -480,7 +485,7 @@ async def build_agent(
             checkpointer=checkpointer,
         )
 
-        _strip_orchestrator_fs_tools(agent)
+        _strip_orchestrator_blocked_tools(agent)
         yield agent
 
 
@@ -529,13 +534,22 @@ def _assert_required_tools(
 
 # read_file is intentionally NOT stripped — skills load their SKILL.md bodies
 # via read_file (progressive disclosure). See profile.py / block_fs_tools.py.
-_ORCHESTRATOR_BLOCKED_FS_TOOLS = frozenset({
+#
+# write_todos is stripped because the orchestrator plans with `write_opplan`
+# (opplan_middleware) instead — a structured, phased OPPLAN. deepagents binds
+# write_todos to every agent via its base TodoListMiddleware; we can't drop that
+# middleware per-agent (its `excluded_middleware` is global per-model and doesn't
+# even apply on the proxy path), so we remove the redundant tool here at the
+# orchestrator's ToolNode. Subagents keep write_todos for their tactical
+# lead-lists — their ToolNodes live in separate subgraphs and are untouched.
+_ORCHESTRATOR_BLOCKED_TOOLS = frozenset({
     "ls", "write_file", "edit_file", "glob", "grep",
+    "write_todos",
 })
 
 
-def _strip_orchestrator_fs_tools(agent: Any) -> None:
-    """Actually remove the deepagents vfs tools from the orchestrator's ToolNode.
+def _strip_orchestrator_blocked_tools(agent: Any) -> None:
+    """Remove redundant deepagents-bound tools from the orchestrator's ToolNode.
 
     The HarnessProfile's `excluded_tools` only filters the **schema** the
     model sees on each call. Anthropic's models (heavily trained on these
@@ -543,10 +557,11 @@ def _strip_orchestrator_fs_tools(agent: Any) -> None:
     anyway — and the ToolNode dutifully executes whatever name it has bound.
     The result was the orchestrator wasting turns ls'ing the empty vfs
     looking for skill files that aren't there (and never will be — skills
-    live in the prompt, not the vfs).
+    live in the prompt, not the vfs), and keeping a second flat todo list
+    alongside the OPPLAN.
 
     This walks the compiled graph, finds the orchestrator's tools node, and
-    removes the six fs tool names from `tools_by_name`. Subsequent calls
+    removes the blocked tool names from `tools_by_name`. Subsequent calls
     return an "unknown tool" error — clear feedback the model can act on,
     instead of misleading empty results. Subagents have their own ToolNodes
     in their own subgraphs and are unaffected.
@@ -554,19 +569,19 @@ def _strip_orchestrator_fs_tools(agent: Any) -> None:
     try:
         tools_node = agent.builder.nodes.get("tools")
         if tools_node is None:
-            log.warning("could not locate orchestrator 'tools' node — skipping fs-tool strip")
+            log.warning("could not locate orchestrator 'tools' node — skipping tool strip")
             return
         runnable = getattr(tools_node, "runnable", tools_node)
         tools_by_name = getattr(runnable, "tools_by_name", None)
         if not isinstance(tools_by_name, dict):
-            log.warning("ToolNode.tools_by_name not a dict (got %s) — skipping fs-tool strip",
+            log.warning("ToolNode.tools_by_name not a dict (got %s) — skipping tool strip",
                         type(tools_by_name).__name__)
             return
-        stripped = [n for n in _ORCHESTRATOR_BLOCKED_FS_TOOLS if tools_by_name.pop(n, None) is not None]
-        log.info("stripped %d fs tool(s) from orchestrator ToolNode: %s",
+        stripped = [n for n in _ORCHESTRATOR_BLOCKED_TOOLS if tools_by_name.pop(n, None) is not None]
+        log.info("stripped %d tool(s) from orchestrator ToolNode: %s",
                  len(stripped), sorted(stripped))
     except Exception:  # noqa: BLE001
-        log.exception("failed to strip orchestrator fs tools — continuing")
+        log.exception("failed to strip orchestrator blocked tools — continuing")
 
 
 def _orchestrator_model(profile: str):

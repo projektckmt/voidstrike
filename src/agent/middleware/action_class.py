@@ -33,6 +33,7 @@ _TOOL_CLASS: dict[str, ActionClass] = {
     # Surface — recon
     "surface__nmap_quick": ActionClass.RECON,
     "surface__nmap_full": ActionClass.RECON,
+    "surface__nmap_udp": ActionClass.RECON,
     "surface__httpx_fingerprint": ActionClass.RECON,
     "surface__web_intake": ActionClass.RECON,
     "surface__service_triage": ActionClass.RECON,

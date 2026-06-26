@@ -63,7 +63,11 @@ async def _exec(cmd: list[str], timeout_s: int | None = 600) -> dict[str, Any]:
 @app.tool()
 async def nmap_quick(target: str, top_ports: int = 1000, scripts: str = "default") -> dict[str, Any]:
     """Fast nmap pass — top ports + default scripts. Use first."""
-    cmd = ["nmap", "-Pn", "-T4", "--top-ports", str(top_ports), "-sV", "-sC", "-oX", "-", target]
+    # `--script default` ≡ the old hardcoded `-sC`; wiring the `scripts` arg in
+    # makes the param actually do something (it was previously dead — `-sC` ran
+    # regardless of what the caller passed).
+    cmd = ["nmap", "-Pn", "-T4", "--top-ports", str(top_ports), "-sV",
+           "--script", scripts, "-oX", "-", target]
     res = await _exec(cmd, timeout_s=600)
     if not res["ok"]:
         return res
@@ -80,6 +84,38 @@ async def nmap_full(target: str, scripts: str = "default,vuln", reason: str = ""
     """
     cmd = ["nmap", "-Pn", "-p-", "-T4", "-sV", "-sC", "--script", scripts, "-oX", "-", target]
     res = await _exec(cmd, timeout_s=1800)
+    if not res["ok"]:
+        return res
+    return _summarize_nmap_xml(res["stdout"], stderr=res["stderr"])
+
+
+@app.tool()
+async def nmap_udp(
+    target: str, top_ports: int = 100, scripts: str = "", reason: str = ""
+) -> dict[str, Any]:
+    """UDP service scan (-sU) over the top UDP ports.
+
+    Use when a TCP scan is thin and UDP-only services are plausible (DNS 53,
+    SNMP 161, TFTP 69, NTP 123, IKE 500, NetBIOS 137, mDNS 5353, etc.). UDP
+    scanning is slow — ICMP port-unreachable rate-limiting makes it inherently
+    so — which is why this defaults to the top 100 UDP ports rather than 1000;
+    raise `top_ports` only when a target hint points at a higher one. `reason`
+    should briefly note why a UDP pass is warranted.
+
+    `scripts` is opt-in (`--script`), empty by default to keep the base scan
+    fast. Set it once a UDP service responds and a targeted NSE script earns its
+    cost — e.g. `scripts="snmp-info"`, `"dns-recursion"`, `"ntp-info"`,
+    `"ike-version"`. Don't pass `"default"`/`"vuln"` for a blanket UDP pass; the
+    broad scripts mostly time out on UDP and balloon the runtime.
+    """
+    # ponytail: top-100 UDP keeps runtime under the cap; top-1000 UDP at -T4
+    # routinely exceeds 20 min. -sV always; -sC/broad scripts are off unless the
+    # caller names a targeted script, since most NSE scripts don't pay off on UDP.
+    cmd = ["nmap", "-Pn", "-sU", "-T4", "--top-ports", str(top_ports), "-sV"]
+    if scripts.strip():
+        cmd += ["--script", scripts]
+    cmd += ["-oX", "-", target]
+    res = await _exec(cmd, timeout_s=1200)
     if not res["ok"]:
         return res
     return _summarize_nmap_xml(res["stdout"], stderr=res["stderr"])

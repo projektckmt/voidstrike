@@ -18,6 +18,11 @@ middleware just disabled prompt caching for no gain. Prompt caching is
 high-leverage: with a stable system prompt + tools, second and subsequent
 calls within ~5 minutes cost ~10% of the input price (huge on Opus runs).
 
+NB this middleware only fires on the *direct* path (ChatAnthropic instance —
+`VOIDSTRIKE_USE_LITELLM=false`). On the default proxy path the model is a
+ChatOpenAI, so it no-ops and LiteLLM injects the cache breakpoints instead
+(see models._litellm_enabled). Caching works either way.
+
 Per the LangChain docs (https://docs.langchain.com/oss/python/deepagents/harness):
 
     >>> from deepagents import HarnessProfile, register_harness_profile

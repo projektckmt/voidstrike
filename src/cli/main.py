@@ -184,15 +184,28 @@ def engage(
 ) -> None:
     """Start an engagement and (by default) stream output here.
 
+    The spec drives the target. With an `htb:` block, the **gateway** spawns the
+    named HackTheBox machine via the HTB API, fills in its IP, submits captured
+    flags, and tears it down per `htb.teardown` — so any client (CLI or web) gets
+    provisioning from the spec alone. An HTB run is atomic: Ctrl-C cancels it and
+    the gateway still tears the box down. A static run (no `htb:` block) targets
+    the IPs in `targets:`, and Ctrl-C pauses it for `voidstrike resume`.
+
     If the spec has a `vpn_config:` field (or `--vpn` / `VPN_FILE` is provided),
     the vpn sidecar is brought up with that .ovpn before the engagement starts.
     Pass `--skip-vpn` to leave compose alone.
     """
+    from ..schemas.engagement import EngagementSpec  # noqa: PLC0415
+
     _print_banner()
     if not spec.exists():
         console.print(f"[red]Spec not found:[/red] {spec}")
         raise typer.Exit(2)
+    parsed = EngagementSpec.from_yaml(spec)
 
+    # VPN sidecar — both static and HTB runs reach the target over the lab tunnel.
+    # The gateway can't bring this up (it's a sibling compose service), so the
+    # host CLI does it before starting the run.
     vpn_path = _resolve_vpn_path(spec, vpn)
     if vpn_path is not None and not skip_vpn:
         project_root = _find_project_root(spec)
@@ -205,6 +218,8 @@ def engage(
             raise typer.Exit(2)
         _ensure_vpn_up(vpn_path, project_root)
 
+    # Post the spec as-is — including any `htb:` block. The gateway provisions
+    # from it (spawn → fill IP → submit flags → teardown); we just stream.
     files: dict[str, tuple[str, bytes, str]] = {"spec": (spec.name, spec.read_bytes(), "application/yaml")}
     if vpn:
         files["vpn_config"] = (vpn.name, vpn.read_bytes(), "application/octet-stream")
@@ -225,211 +240,11 @@ def engage(
         title="started",
     ))
     if attach:
-        # `pause` (not `cancel`) on Ctrl-C: the operator usually wants to
-        # step away and pick this back up later, not lose the checkpoint.
-        # An explicit `voidstrike cancel <id>` still terminates the run.
-        _attach_stream(engagement_id, on_interrupt="pause", debug_log=debug_log)
-
-
-@app.command()
-def challenge(
-    spec: Path = typer.Argument(..., help="Engagement YAML spec with an `htb:` block"),
-    teardown: bool | None = typer.Option(
-        None, "--teardown/--no-teardown",
-        help="Override the spec's htb.teardown (force terminate-after / keep-running).",
-    ),
-    force: bool = typer.Option(
-        True, "--force/--no-force",
-        help="If a DIFFERENT HTB machine is already spawned, terminate it first "
-             "(default: on — HTB allows one active box at a time, so a leftover "
-             "box just blocks the run). Pass --no-force to error out instead of "
-             "terminating someone else's box.",
-    ),
-    skip_vpn: bool = typer.Option(
-        False, "--skip-vpn", help="Don't bring up the VPN sidecar."),
-    profile: str = typer.Option("eco", "--profile", help="eco | max | test | qwen | gpt"),
-    debug_log: Path | None = typer.Option(
-        None, "--debug-log", help="Append the raw event stream to this file as JSON Lines."),
-) -> None:
-    """Spawn an HTB machine, run the engagement against it, then tear it down.
-
-    The spec must carry an `htb:` block naming the machine; the target IP is
-    resolved at spawn time (so you don't hardcode a per-spawn IP in `targets`).
-    Requires `HTB_TOKEN` (from the environment or `.env`). Ctrl-C aborts the run
-    and still tears the machine down.
-    """
-    import asyncio  # noqa: PLC0415
-    import tempfile  # noqa: PLC0415
-
-    from ..agent.challenge import EngageOutcome, run_challenge  # noqa: PLC0415
-    from ..integrations.htb import HtbClient, HtbError  # noqa: PLC0415
-    from ..schemas.engagement import EngagementSpec  # noqa: PLC0415
-
-    _print_banner()
-    if not spec.exists():
-        console.print(f"[red]Spec not found:[/red] {spec}")
-        raise typer.Exit(2)
-    parsed = EngagementSpec.from_yaml(spec)
-    if parsed.htb is None:
-        console.print(
-            "[red]This spec has no `htb:` block.[/red] Use `voidstrike engage` for a static target."
-        )
-        raise typer.Exit(2)
-    cfg = parsed.htb
-    if teardown is not None:
-        cfg = cfg.model_copy(update={"teardown": "on_complete" if teardown else "never"})
-
-    token = _htb_token()
-    if not token:
-        console.print("[red]No HTB_TOKEN found.[/red] Add it to .env (HTB_TOKEN=...) or export it.")
-        raise typer.Exit(2)
-
-    # HTB boxes are only reachable over the lab VPN — bring it up like `engage`.
-    vpn_path = _resolve_vpn_path(spec, None)
-    if vpn_path is not None and not skip_vpn:
-        project_root = _find_project_root(spec)
-        if project_root is None:
-            console.print("[red]Could not locate infra/docker-compose.yml[/red] (use --skip-vpn).")
-            raise typer.Exit(2)
-        _ensure_vpn_up(vpn_path, project_root)
-
-    raw_spec = yaml.safe_load(spec.read_text())
-
-    async def _engage(ip: str) -> EngageOutcome:
-        # Inject the resolved IP into a temp spec (drop `htb` so the gateway run
-        # is a plain static-target engagement against the spawned box).
-        run_spec = dict(raw_spec)
-        run_spec["targets"] = [ip]
-        run_spec.pop("htb", None)
-        body = yaml.safe_dump(run_spec).encode()
-        try:
-            resp = httpx.post(
-                f"{GATEWAY_URL}/engagements",
-                files={"spec": (spec.name, body, "application/yaml")},
-                data={"profile": profile},
-                timeout=30.0,
-            )
-            resp.raise_for_status()
-        except httpx.HTTPError as exc:
-            # Raise into run_challenge so teardown still fires for the box we spawned.
-            raise RuntimeError(f"gateway error starting engagement: {exc}") from exc
-        eid = resp.json()["engagement_id"]
-        console.print(Panel.fit(
-            f"[bold]engagement_id:[/bold] {eid}\n[bold]target:[/bold] {ip}", title="engaged"))
-
-        # Stream live (reusing _attach_stream's display + reconnect) while
-        # capturing the full event record, then read the outcome back from it.
-        if debug_log is not None:
-            cap, cleanup = debug_log, None
-        else:
-            fd, name = tempfile.mkstemp(suffix=".jsonl")
-            os.close(fd)
-            cap, cleanup = Path(name), Path(name)
-        try:
-            # Ctrl-C cancels the engagement (a challenge is atomic) — teardown
-            # below then cleans up the box. Only announce the debug-log path when
-            # the user actually asked for one (cap is a throwaway temp otherwise).
-            _attach_stream(
-                eid, on_interrupt="cancel", debug_log=cap,
-                announce_debug_log=debug_log is not None,
-            )
-            return _outcome_from_events(cap, parsed.expected_flags)
-        finally:
-            if cleanup is not None:
-                cleanup.unlink(missing_ok=True)
-
-    def _ev(stage: str, msg: str) -> None:
-        console.print(f"[dim]htb[/dim] [cyan]{stage}[/cyan] {_esc(msg)}")
-
-    async def _go() -> int:
-        async with HtbClient(token=token) as client:
-            res = await run_challenge(
-                cfg, client=client, engage=_engage,
-                force_terminate_other=force, on_event=_ev,
-            )
-        if res.status == "solved":
-            console.print(f"[green]✓ solved[/green] — {len(res.flags_submitted)} flag(s) submitted to HTB")
-        elif res.status == "failed":
-            console.print("[yellow]✗ not solved[/yellow]")
-        else:
-            console.print(f"[red]✗ error:[/red] {_esc(res.error or '')}")
-        if res.flag_errors:
-            console.print(f"[yellow]flag submit issues:[/yellow] {_esc('; '.join(res.flag_errors))}")
-        console.print(f"[dim]machine teardown:[/dim] {'done' if res.teardown_done else 'skipped'}")
-        return 0 if res.status == "solved" else 1
-
-    try:
-        rc = asyncio.run(_go())
-    except HtbError as exc:
-        console.print(f"[red]HTB error:[/red] {_esc(str(exc))}")
-        raise typer.Exit(1) from exc
-    raise typer.Exit(rc)
-
-
-def _htb_token() -> str:
-    """HTB App Token from the environment, falling back to a `.env` at the cwd
-    (the host CLI doesn't auto-load .env the way the compose containers do)."""
-    tok = os.environ.get("HTB_TOKEN")
-    if tok:
-        return tok.strip()
-    env_file = Path(".env")
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            line = line.strip()
-            if line.startswith("HTB_TOKEN="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    return ""
-
-
-def _walk_record_flags(obj: object) -> list[str]:
-    """Recursively pull flag strings from `record_flag` tool calls anywhere in an
-    event (the orchestrator records each captured flag via that tool)."""
-    found: list[str] = []
-    if isinstance(obj, dict):
-        if obj.get("name") == "record_flag":
-            args = obj.get("args") or {}
-            flag = args.get("flag") if isinstance(args, dict) else None
-            if isinstance(flag, str) and flag.strip():
-                found.append(flag.strip())
-        for v in obj.values():
-            found.extend(_walk_record_flags(v))
-    elif isinstance(obj, list):
-        for v in obj:
-            found.extend(_walk_record_flags(v))
-    return found
-
-
-def _outcome_from_events(path: Path, expected_flags: int | None):
-    """Derive (flags, success) from a captured JSONL event stream.
-
-    Only events after the last `_debug_meta` delimiter are considered, so a
-    re-used/appended debug-log doesn't carry stale flags from a prior run."""
-    from ..agent.challenge import EngageOutcome  # noqa: PLC0415
-
-    lines = path.read_text(errors="replace").splitlines() if path.exists() else []
-    start = 0
-    for i, ln in enumerate(lines):
-        try:
-            if json.loads(ln).get("event") == "_debug_meta":
-                start = i + 1
-        except (json.JSONDecodeError, ValueError):
-            continue
-
-    flags: list[str] = []
-    rooted = False
-    for ln in lines[start:]:
-        try:
-            ev = json.loads(ln)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        for f in _walk_record_flags(ev):
-            if f not in flags:
-                flags.append(f)
-        blob = json.dumps(ev).lower()
-        if "objective_met" in blob or "root flag captured" in blob:
-            rooted = True
-    success = rooted or (expected_flags is not None and len(flags) >= expected_flags)
-    return EngageOutcome(flags=flags, success=bool(success))
+        # HTB runs are atomic → `cancel` on Ctrl-C (the gateway tears the box
+        # down on cancel). Static runs `pause` so the operator can `resume`
+        # later; an explicit `voidstrike cancel <id>` still terminates either.
+        on_interrupt = "cancel" if parsed.htb is not None else "pause"
+        _attach_stream(engagement_id, on_interrupt=on_interrupt, debug_log=debug_log)
 
 
 def _resolve_vpn_path(spec_path: Path, vpn_flag: Path | None) -> Path | None:
@@ -986,6 +801,12 @@ def _render_event(event: dict) -> None:
             tb = _esc(str(event["traceback"]))
             console.print(f"[red]{tb}[/red]")
         return
+    if kind == "htb":
+        # Gateway-side HTB provisioning progress (spawn / ready / flag / teardown).
+        stage = _esc(str(event.get("stage", "")))
+        msg = _esc(str(event.get("message", "")))
+        console.print(f"[dim]htb[/dim] [cyan]{stage}[/cyan] {msg}")
+        return
 
     # `step` events have shape:
     #   {"event": "step", "namespace": [...], "data": {<node_name>: <state>}}
@@ -1137,6 +958,7 @@ _HIDDEN_TOOL_CALLS = frozenset({
     "episodes__write_episode",
     "episodes__write_finding",
     "write_todos",
+    "write_opplan",
 })
 
 
@@ -1167,11 +989,14 @@ def _format_tool_call(name: str, args) -> tuple[str, str, str] | None:
         _record_task_dispatch(assignee)
         return ("delegates to", assignee, _short(description, n=160))
 
-    if name == "surface__nmap_quick" or name == "surface__nmap_full":
+    if name in {"surface__nmap_quick", "surface__nmap_full", "surface__nmap_udp"}:
         target = str(a.get("target", "target"))
-        ports = f"top {a['top_ports']}" if a.get("top_ports") else (
-            "quick" if name.endswith("quick") else "full"
-        )
+        if name.endswith("udp"):
+            ports = f"top {a['top_ports']} UDP" if a.get("top_ports") else "UDP"
+        else:
+            ports = f"top {a['top_ports']}" if a.get("top_ports") else (
+                "quick" if name.endswith("quick") else "full"
+            )
         scripts = f", scripts {a['scripts']}" if a.get("scripts") else ""
         return ("scans", "nmap", f"{target} ({ports}{scripts})")
 
@@ -1223,6 +1048,8 @@ def _format_tool_call(name: str, args) -> tuple[str, str, str] | None:
     if name == "research__cisa_kev_lookup":
         ids = a.get("cve_ids") or []
         return ("checks", "CISA KEV", str(a.get("query") or ", ".join(map(str, ids))))
+    if name == "research__web_search":
+        return ("searches", "web", str(a.get("query", "")))
     if name == "research__github_poc_search":
         return ("searches", "github POCs", str(a.get("query", "")))
     if name == "research__fetch_poc":
@@ -1281,6 +1108,8 @@ def _render_tool_result(name: str, content: str) -> bool:
     """Dispatch to a tool-specific result renderer. Return True if handled."""
     if name == "write_todos":
         return _render_todo_list(content)
+    if name == "write_opplan":
+        return _render_opplan(content)
     if name in {"episodes__write_episode", "episodes__write_finding",
                 "write_objective"}:
         return True  # Silent — the call line already conveyed it.
@@ -1292,7 +1121,7 @@ def _render_tool_result(name: str, content: str) -> bool:
         return _render_run_oneshot_result(content)
     if name == "shell__http_json_request":
         return _render_http_json_request_result(content)
-    if name in {"surface__nmap_quick", "surface__nmap_full"}:
+    if name in {"surface__nmap_quick", "surface__nmap_full", "surface__nmap_udp"}:
         return _render_nmap_result(content)
     if name == "surface__ffuf":
         return _render_ffuf_result(content)
@@ -1394,6 +1223,55 @@ def _render_todo_list(content: str) -> bool:
             status, ("[dim]•[/dim]", "white")
         )
         console.print(f"   {glyph} {_esc(text)}  [dim]({_esc(status)})[/dim]")
+    return True
+
+
+# Status → glyph for OPPLAN phases (write_opplan; distinct vocabulary from todos).
+_OPPLAN_STATUS_DISPLAY = {
+    "done":    "[green]✓[/green]",
+    "active":  "[yellow]◐[/yellow]",
+    "pending": "[dim]○[/dim]",
+    "dead":    "[red]✗[/red]",
+}
+
+
+def _render_opplan(content: str) -> bool:
+    """Render a write_opplan result: mission + phased plan. Returns True if
+    handled, else False so the caller falls back to the generic preview.
+
+    The tool's ToolMessage is `Updated OPPLAN to {json}` (see opplan.py
+    _opplan_update); extract and parse that JSON payload.
+    """
+    import re  # noqa: PLC0415
+
+    match = re.search(r"\{.*\}", content, flags=re.DOTALL)
+    if not match:
+        return False
+    try:
+        plan = json.loads(match.group(0))
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(plan, dict):
+        return False
+    phases = plan.get("phases")
+    if not isinstance(phases, list) or not phases:
+        return False
+
+    mission = str(plan.get("mission", "")).strip()
+    head = f"  [dim]—[/dim] {_esc(mission)}" if mission else ""
+    console.print(f"[dim]✓[/dim] [cyan]OPPLAN[/cyan]{head}")
+    for ph in phases:
+        if not isinstance(ph, dict):
+            console.print(f"   • {_esc(str(ph))}")
+            continue
+        status = str(ph.get("status", "pending"))
+        glyph = _OPPLAN_STATUS_DISPLAY.get(status, "[dim]•[/dim]")
+        label = str(ph.get("phase", "?"))
+        intent = str(ph.get("intent", "")).replace("\n", " ")
+        console.print(f"   {glyph} [bold]{_esc(label)}[/bold]  {_esc(_short(intent, n=140))}")
+        decision = str(ph.get("decision", "")).replace("\n", " ")
+        if decision:
+            console.print(f"       [dim]→ {_esc(_short(decision, n=150))}[/dim]")
     return True
 
 
@@ -2359,6 +2237,31 @@ def _render_research_result(name: str, content: str) -> bool:
                 continue
             glyph = {True: "[red]✓[/red]", False: "[dim]✗[/dim]"}.get(r.get("matches"), "[yellow]?[/yellow]")
             console.print(f"      {glyph} {_esc(str(r.get('range', '')))}")
+        return True
+
+    if short == "web_search":
+        results = data.get("results") or []
+        src = str(data.get("source") or "web")
+        query = _short(str(data.get("query") or ""), n=80)
+        console.rule(
+            f"[cyan]{_esc(src)}: {len(results)} result"
+            f"{'' if len(results) == 1 else 's'}[/cyan]  [dim]{_esc(query)}[/dim]",
+            align="left",
+        )
+        answer = str(data.get("answer") or "").strip()
+        if answer:
+            console.print(f"      [green]⮞[/green] {_esc(_short(answer, n=200))}")
+        for r in results[:8]:
+            if not isinstance(r, dict):
+                continue
+            title = _short(str(r.get("title") or "(untitled)"), n=90)
+            console.print(f"  [bold]{_esc(title)}[/bold]")
+            console.print(f"      [dim blue]{_esc(str(r.get('url') or ''))}[/dim blue]")
+            snippet = str(r.get("snippet") or r.get("content") or "").replace("\n", " ")
+            if snippet:
+                console.print(f"      [dim]{_esc(_short(snippet, n=170))}[/dim]")
+        if len(results) > 8:
+            console.print(f"  [dim]… {len(results) - 8} more[/dim]")
         return True
 
     return False  # unknown research tool — generic summary handles it

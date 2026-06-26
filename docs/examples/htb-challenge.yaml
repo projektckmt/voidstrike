@@ -1,5 +1,6 @@
 # HTB challenge spec — the box is spawned/solved/torn down for you.
-# Run with:  voidstrike challenge docs/examples/htb-challenge.yaml
+# Run with:  voidstrike engage docs/examples/htb-challenge.yaml
+# (the `htb:` block makes `engage` spawn/solve/submit/teardown automatically)
 # Requires HTB_TOKEN (env or .env). No `targets:` — the IP is filled in at spawn.
 name: htb-support
 mode: ctf

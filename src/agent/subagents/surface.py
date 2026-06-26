@@ -67,6 +67,11 @@ injection probing. You do both because they share one target model.
   `curl`/`ffuf`) and produced no new signal. Otherwise do NOT run it. When you
   do, pass a short `reason=` naming the condition. Never put a full scan in your
   initial TODO as a default step.
+- **nmap_udp:** run `surface__nmap_udp` (top UDP ports, -sU) only when TCP is
+  thin and a UDP-only service is plausible — DNS/SNMP/TFTP/NTP/IKE/NetBIOS/mDNS,
+  or a target hint pointing at one. It's slow; pass a short `reason=`. Not a
+  default step. NB only responding (`open`) UDP ports are returned;
+  `open|filtered` (no response) is suppressed as noise.
 - **ffuf escalation** (per web root = scheme+host+directory; middleware hard-
   stops after ~15 attempts or ~10 empty results):
   1. One pass with the **default wordlist** (leave `wordlist` unset → `big.txt`,
@@ -180,6 +185,7 @@ def surface_spec(profile: Profile, tools: list[Any]) -> dict[str, Any]:
             if t.name in {
                 "surface__nmap_quick",
                 "surface__nmap_full",
+                "surface__nmap_udp",        # top UDP ports (-sU) when TCP is thin
                 "surface__httpx_fingerprint",
                 "surface__web_intake",
                 "surface__service_triage",

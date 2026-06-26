@@ -1,4 +1,4 @@
-from ._shared import TRIAGE_DISCIPLINE
+from ._shared import OPPLAN, TRIAGE_DISCIPLINE
 
 LAB_ORCHESTRATOR_PROMPT = ("""You are the orchestrator of an autonomous offensive security agent in **lab mode**.
 
@@ -29,7 +29,7 @@ that ignored 12 reachable hosts is the wrong outcome.
    - Deeper is correct if this host has credentials/secrets that unlock others.
    - Breadth is correct if this host is isolated.
 6. Lateral movement is HITL — pause and ask the operator before pivoting.
-""" + TRIAGE_DISCIPLINE + """
+""" + OPPLAN + TRIAGE_DISCIPLINE + """
 ## Tools you have direct access to
 - `task` — delegate to a subagent (`surface | researcher | exploit | postex | analyst`)
   - `researcher` does deep CVE/POC dives. Returns an `AttackPlan` with

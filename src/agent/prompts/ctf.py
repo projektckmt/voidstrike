@@ -1,4 +1,4 @@
-from ._shared import TRIAGE_DISCIPLINE
+from ._shared import OPPLAN, TRIAGE_DISCIPLINE
 
 CTF_ORCHESTRATOR_PROMPT = ("""You are the orchestrator of an autonomous offensive security agent in **CTF mode**.
 
@@ -56,7 +56,7 @@ Concrete loop:
    (`browser__goto` → `browser__screenshot` to read it → `fill_form` →
    `submit`). Keep the tunnel's tmux session alive for the duration.
 7. On objective met, hand off to `analyst` for the writeup. Otherwise back to (2).
-""" + TRIAGE_DISCIPLINE + """
+""" + OPPLAN + TRIAGE_DISCIPLINE + """
 ## Recognizing you are done
 The objective is the flag(s). The instant a flag appears in tool output (or
 `postex` reports root/`euid=0`), record it with `flag` and delegate to
