@@ -102,6 +102,43 @@ cap mid-engagement, you'll need to write a new episode marking the budget
 extension and restart with a fresh `--budget` (Phase 3 will expose this as a
 CLI command).
 
+## Running benchmarks
+
+Measures agent performance against the [XBOW validation-benchmarks](https://github.com/xbow-engineering/validation-benchmarks)
+corpus (104 web CTF boxes, pinned as the `benchmark/xbow` submodule). Each box
+self-provisions: the runner builds it with the canonical `FLAG{sha256hex(NAME)}`,
+attaches its web service to `voidstrike_ops-net` under the box's hostname, runs
+an engagement, scores by exact flag-equality, then tears it down.
+
+```bash
+# one-time: pull the corpus
+git submodule update --init benchmark/xbow
+
+# management plane must be up (creates voidstrike_ops-net + gateway :8000)
+docker compose -f infra/docker-compose.yml up -d
+
+source .venv/bin/activate
+python -m benchmark.ci_easy        # lab targets + 45 level-1 boxes, eco profile
+python -m benchmark.nightly_full   # full 104-box corpus, max profile
+python -m benchmark.aggregate      # roll up the pass-rate / cost trend
+```
+
+The runner shells out to `docker compose`, so run it on a host with Docker
+access and reachability to the gateway. Knobs: `VOIDSTRIKE_GATEWAY` (default
+`http://localhost:8000`), `PR_BUDGET_USD` (ci_easy spend cap, default 30),
+`REGRESSION_TOLERANCE` (boxes ci_easy may drop vs `results/baseline.json`
+before failing, default 2).
+
+In CI this runs nightly (`.github/workflows/benchmark.yml`) or on demand via
+**Actions → benchmark → Run workflow** (pick `ci_easy` or `nightly`) on the
+self-hosted runner. To iterate on a single box:
+
+```bash
+python -c "import asyncio; from benchmark import xbow, ci_easy; \
+b=[x for x in xbow.load(1) if x['name']=='XBEN-005-24'][0]; \
+print(asyncio.run(ci_easy.run_benchmark(b)))"
+```
+
 ## When the agent does something dumb
 
 1. Read the episode log: `voidstrike episodes <engagement_id> --n 200`.

@@ -18,6 +18,8 @@ jobs:
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive   # XBOW benchmark corpus lives in benchmark/xbow
       - name: Bring up the stack
         run: docker compose -f infra/docker-compose.yml up -d
       - name: Wait for gateway

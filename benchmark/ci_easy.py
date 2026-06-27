@@ -15,7 +15,9 @@ from pathlib import Path
 
 import httpx
 
-XBOW_EASY_LIST = Path(__file__).parent / "data" / "xbow_easy.json"
+from . import xbow
+
+LAB_TARGETS = Path(__file__).parent / "data" / "lab_targets.json"
 RESULTS_DIR = Path(__file__).parent / "results"
 GATEWAY = os.environ.get("VOIDSTRIKE_GATEWAY", "http://localhost:8000")
 PR_BUDGET_USD = float(os.environ.get("PR_BUDGET_USD", "30.0"))
@@ -41,9 +43,10 @@ async def run_one(box: dict, profile: str = "eco") -> dict:
         resp.raise_for_status()
         engagement_id = resp.json()["engagement_id"]
 
-        # Stream events until "end".
+        # Stream events until "end", buffering text so we can score the flag.
+        flag = (box.get("flag") or "").lower()
         rooted = False
-        cost = 0.0
+        transcript: list[str] = []
         async with client.stream("GET", f"{GATEWAY}/engagements/{engagement_id}/stream") as stream:
             async for line in stream.aiter_lines():
                 if not line.startswith("data:"):
@@ -57,18 +60,19 @@ async def run_one(box: dict, profile: str = "eco") -> dict:
                     continue
                 if event.get("event") == "end":
                     break
-                # objective_met events are emitted as part of the agent stream
                 data = json.dumps(event).lower()
-                if "objective_met" in data or "root flag captured" in data:
+                transcript.append(data)
+                if flag:
+                    # Flag-equality: the exact build-arg flag must surface.
+                    if flag in data:
+                        rooted = True
+                elif "objective_met" in data or "root flag captured" in data:
                     rooted = True
 
-        # Get cost from episodes summary.
-        try:
-            summary = await client.get(f"{GATEWAY}/engagements/{engagement_id}/episodes?n=1")
-            # Cost is on every episode; this only fetches one, so the dashboard view is more reliable.
-            cost = float(box.get("budget_usd", 1.5))  # cap fallback
-        except Exception:
-            pass
+        if flag and not rooted:
+            rooted = flag in "".join(transcript)
+
+        cost = await _engagement_cost(client, engagement_id)
 
     return {
         "name": box["name"],
@@ -78,11 +82,29 @@ async def run_one(box: dict, profile: str = "eco") -> dict:
     }
 
 
+async def _engagement_cost(client: httpx.AsyncClient, engagement_id: str) -> float:
+    """Real spend = sum of cost_usd over every episode for this engagement."""
+    try:
+        resp = await client.get(f"{GATEWAY}/engagements/{engagement_id}/episodes?n=100000")
+        eps = resp.json().get("episodes", [])
+        return sum(float(e.get("cost_usd") or 0.0) for e in eps)
+    except Exception:
+        return 0.0
+
+
+async def run_benchmark(box: dict, profile: str = "eco") -> dict:
+    """Run a box, provisioning + tearing down its stack if it's an XBOW target."""
+    if box.get("xbow_dir"):
+        with xbow.provision(box):
+            return await run_one(box, profile)
+    return await run_one(box, profile)
+
+
 async def main() -> int:
-    if not XBOW_EASY_LIST.exists():
-        print(f"missing {XBOW_EASY_LIST} — populate it first", file=sys.stderr)
-        return 2
-    boxes = json.loads(XBOW_EASY_LIST.read_text())
+    # Lab smoke targets (already on ops-net) + the XBOW level-1 corpus.
+    boxes = xbow.load(level=1)
+    if LAB_TARGETS.exists():
+        boxes = json.loads(LAB_TARGETS.read_text()) + boxes
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     out = RESULTS_DIR / f"ci_easy_{int(time.time())}.json"
@@ -94,7 +116,7 @@ async def main() -> int:
             results.append({"name": box["name"], "rooted": False, "skipped_budget": True})
             continue
         try:
-            res = await run_one(box)
+            res = await run_benchmark(box)
         except Exception as exc:  # noqa: BLE001
             res = {"name": box["name"], "rooted": False, "error": str(exc)}
         results.append(res)
