@@ -3,6 +3,12 @@
 # any per-engagement targets. The two networks are bridged only via the docker
 # socket and the episodes MCP server.
 
+# Pin the project name so the network is always `voidstrike_ops-net` regardless
+# of which directory `docker compose` is invoked from. The ops plane + the
+# benchmark runner reference that exact name; without this the project defaulted
+# to `infra` (the dir), creating `infra_ops-net` and breaking those references.
+name: voidstrike
+
 services:
   postgres:
     image: postgres:16-alpine

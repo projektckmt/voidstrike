@@ -118,7 +118,8 @@ git submodule update --init benchmark/xbow
 docker compose -f infra/docker-compose.yml up -d
 
 source .venv/bin/activate
-python -m benchmark.ci_easy        # lab targets + 45 level-1 boxes, eco profile
+python -m benchmark.ci_easy        # 45 level-1 XBOW boxes, eco profile (scored)
+python -m benchmark.lab            # DVWA/Juice Shop smoke targets, eco (unscored)
 python -m benchmark.nightly_full   # full 104-box corpus, max profile
 python -m benchmark.aggregate      # roll up the pass-rate / cost trend
 ```

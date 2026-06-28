@@ -1113,6 +1113,35 @@ async def list_episodes_for_engagement(engagement_id: str, n: int = 100) -> dict
     return {"episodes": [_episode_row(r) for r in rows]}
 
 
+@app.get("/spend")
+async def spend_for_window(start: str, end: str) -> dict[str, Any]:
+    """Real LiteLLM-billed spend in the [start, end] UTC window, summed from the
+    `LiteLLM_SpendLogs` table (same Postgres the proxy logs to).
+
+    The benchmark runner uses this to attribute per-box cost: boxes run
+    sequentially, so a time window isolates one engagement's model traffic.
+    `available` is false when the spend-log table is missing/unreadable (e.g.
+    LiteLLM disabled) so callers can fall back to a token-price estimate.
+    """
+    from psycopg.rows import dict_row  # noqa: PLC0415
+
+    pool = _get_pg_pool()
+    await pool.open()
+    try:
+        async with pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    'SELECT COALESCE(SUM(spend), 0) AS spend, COUNT(*) AS n '
+                    'FROM "LiteLLM_SpendLogs" '
+                    'WHERE "startTime" >= %s::timestamp AND "startTime" <= %s::timestamp',
+                    (start, end),
+                )
+                row = await cur.fetchone()
+    except Exception as exc:  # noqa: BLE001 — table absent / LiteLLM off
+        return {"available": False, "spend_usd": 0.0, "rows": 0, "error": str(exc)}
+    return {"available": True, "spend_usd": float(row["spend"] or 0.0), "rows": int(row["n"] or 0)}
+
+
 def _episode_row(r: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": r["id"],

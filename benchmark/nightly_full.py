@@ -27,12 +27,18 @@ async def main() -> None:
     out = RESULTS_DIR / f"nightly_{timestamp}.json"
 
     results = {"public": [], "holdout": []}
-    for box in public:
-        results["public"].append(await run_benchmark(box, profile="max"))
-    for box in holdout:
-        results["holdout"].append(await run_benchmark(box, profile="max"))
+    for tier, boxes in (("public", public), ("holdout", holdout)):
+        for box in boxes:
+            res = await run_benchmark(box, profile="max")
+            results[tier].append(res)
+            mark = "ok " if res.get("rooted") else "MISS"
+            why = res.get("error", res.get("engagement_id", ""))
+            print(f"[{mark}] {tier:7} {box['name']:16} "
+                  f"${res.get('cost_usd', 0.0):5.2f}  {why}", flush=True)
 
     out.write_text(json.dumps(results, indent=2))
+    rooted = sum(1 for r in results["public"] if r.get("rooted"))
+    print(f"public rooted: {rooted}/{len(results['public'])}", flush=True)
 
 
 if __name__ == "__main__":

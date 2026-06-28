@@ -15,13 +15,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 
 BENCH_DIR = Path(__file__).parent / "xbow" / "benchmarks"
-OPS_NET = "voidstrike_ops-net"  # external network from infra/docker-compose.ops.yml
+# The network the agent's shell-mcp lives on. Pinned to `voidstrike_ops-net` by
+# the `name: voidstrike` project in infra/docker-compose.yml. Override if your
+# management plane runs under a different compose project.
+OPS_NET = os.environ.get("VOIDSTRIKE_OPS_NET", "voidstrike_ops-net")
 
 # One service per benchmark publishes a port — that's the web entrypoint the
 # agent talks to. ponytail: relies on the 1-published-service invariant that
@@ -35,14 +39,22 @@ def expected_flag(name: str) -> str:
     return f"FLAG{{{digest}}}"
 
 
-def _entry_service(compose_path: Path) -> str:
+def _services_with_ports(compose_path: Path) -> list[str]:
+    """Top-level service names that declare a `ports:` (host) publish."""
     text = compose_path.read_text()
-    # Find each top-level service block and pick the one declaring `ports:`.
+    names: list[str] = []
     for block in re.split(r"\n(?=  [\w-]+:\n)", text):
         m = re.match(r"\s*([\w-]+):", block)
         if m and re.search(r"\n\s+ports:", block):
-            return m.group(1)
-    raise ValueError(f"no port-publishing service in {compose_path}")
+            names.append(m.group(1))
+    return names
+
+
+def _entry_service(compose_path: Path) -> str:
+    svcs = _services_with_ports(compose_path)
+    if not svcs:
+        raise ValueError(f"no port-publishing service in {compose_path}")
+    return svcs[0]  # the web entrypoint — the 1-published-service invariant
 
 
 def load(level: int | None = None) -> list[dict]:
@@ -85,27 +97,51 @@ def provision(box: dict):
     proj = box["target"]
     flag = box["flag"]
     cid = None
+
+    # The agent reaches the box by its ops-net alias on the container's internal
+    # port, so the boxes' host port publishes (`8000:80`, `3306:3306`, …) are
+    # pointless here and collide — e.g. six boxes bind :8000, same as the gateway.
+    # A compose override resets every published-ports list (compose >= 2.24).
+    files = ["-f", "docker-compose.yml"]
+    override = d / "docker-compose.voidstrike-bench.yml"
+    svcs = _services_with_ports(d / "docker-compose.yml")
+    if svcs:
+        override.write_text(
+            "services:\n"
+            + "".join(f"  {s}:\n    ports: !reset []\n" for s in svcs)
+        )
+        files += ["-f", override.name]
+
     try:
         _run(
-            ["docker", "compose", "-p", proj, "build",
+            ["docker", "compose", *files, "-p", proj, "build",
              "--build-arg", f"FLAG={flag}", "--build-arg", f"flag={flag}"],
             cwd=d,
         )
-        up = _run(["docker", "compose", "-p", proj, "up", "-d", "--wait"], cwd=d)
+        up = _run(["docker", "compose", *files, "-p", proj, "up", "-d", "--wait"], cwd=d)
         if up.returncode != 0:
             # ponytail: --wait needs healthchecks; a few benchmarks lack them.
-            _run(["docker", "compose", "-p", proj, "up", "-d"], cwd=d)
+            _run(["docker", "compose", *files, "-p", proj, "up", "-d"], cwd=d)
 
         svc = _entry_service(d / "docker-compose.yml")
-        cid = _run(["docker", "compose", "-p", proj, "ps", "-q", svc], cwd=d).stdout.strip()
+        cid = _run(["docker", "compose", *files, "-p", proj, "ps", "-q", svc], cwd=d).stdout.strip()
         if not cid:
             raise RuntimeError(f"{proj}: entry container {svc} not running")
-        _run(["docker", "network", "connect", OPS_NET, cid, "--alias", proj])
+        conn = _run(["docker", "network", "connect", OPS_NET, cid, "--alias", proj])
+        if conn.returncode != 0:
+            # Hard-fail instead of yielding an unreachable box: otherwise the
+            # agent burns its whole budget flailing at an unresolvable hostname.
+            raise RuntimeError(
+                f"{proj}: could not attach to network {OPS_NET!r} "
+                f"({conn.stderr.strip() or 'unknown error'}). Is the management "
+                f"plane up? Set VOIDSTRIKE_OPS_NET if it uses a different network."
+            )
         yield box
     finally:
         if cid:
             _run(["docker", "network", "disconnect", "-f", OPS_NET, cid])
-        _run(["docker", "compose", "-p", proj, "down", "-v"], cwd=d)
+        _run(["docker", "compose", *files, "-p", proj, "down", "-v"], cwd=d)
+        override.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
